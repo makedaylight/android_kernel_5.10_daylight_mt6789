@@ -1,0 +1,1 @@
+./../../../../../vendor/mediatek/proprietary/bootable/bootloader/lk2/dev/lcm/nt36523n_uxga_dsi_vdo_120hz_sharp/nt36523n_uxga_dsi_vdo_120hz_sharp.h

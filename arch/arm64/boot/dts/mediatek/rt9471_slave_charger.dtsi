@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2021 MediaTek Inc.
+ */
+#include <dt-bindings/phy/phy.h>
+
+&pio {
+	rt9471_default: rt9471_default {
+		pins_intr {
+			pinmux = <PINMUX_GPIO8__FUNC_GPIO8>; //EINT8, dws: input high
+			bias-pull-up;
+			input-enable;
+		};
+		pins_ceb {
+			pinmux = <PINMUX_GPIO151__FUNC_GPIO151>; //PERIPHERAL_EN1, dws: output high
+			//drive-strength = <3>;
+			output-high;
+		};
+	};
+};
+
+&i2c7 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	rt9471: slave-charger@53 {
+		compatible = "richtek,rt9471";
+		reg = <0x53>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&rt9471_default>;
+
+		ceb-gpios = <&pio 151 GPIO_ACTIVE_LOW>; //CE: output, active low
+
+		wakeup-source;
+		interrupts-extended = <&pio 8 IRQ_TYPE_LEVEL_LOW>; //INT: input, active low
+		interrupt-controller;
+		#interrupt-cells = <1>;
+
+		/*
+		 * Charger name
+		 * Main charger: primary_chg
+		 * Slave charger: secondary_chg
+		 */
+		chg_name = "secondary_chg";
+		//chg_name = "primary_chg";
+		chg_alias_name = "rt9471_chg";
+
+		phys = <&u2port0 PHY_TYPE_USB2>;
+		phy-names = "usb2-phy";
+		//usb = <&ssusb>; //comment out to avoid kernel panic
+
+#if 0
+		otg-vbus {
+			regulator-compatible = "otg-vbus";
+			regulator-min-microvolt = <4850000>;
+			regulator-max-microvolt = <5300000>;
+			regulator-min-microamp = <500000>;
+			regulator-max-microamp = <1200000>;
+		};
+#endif
+	};
+};
+	

@@ -1,0 +1,1269 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Copyright (C) 2021 MediaTek Inc.
+ */
+/dts-v1/;
+/plugin/;
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/pinctrl/mt6789-pinfunc.h>
+#include <dt-bindings/input/gpio-keys.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/gce/mt6789-gce.h>
+
+// #define RT4539_BACKLIGHT_USE_PWM_MODE
+
+#define ROOT_NODE &odm
+
+ROOT_NODE {
+	gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+		//pinctrl-names = "default";
+
+		lid {
+			label = "Lid";
+			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+			linux,code = <SW_LID>;
+			linux,input-type = <EV_SW>;
+			wakeup-source; /*gpio-key,wakeup;*/
+		};
+	};
+	pogo5v: regulator_pogo5v {
+		compatible = "regulator-fixed";
+		regulator-name = "POGO-5V";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpios = <&pio 153 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+};
+
+&chosen {
+};
+
+&android {
+	hardware = "mt8781";
+};
+
+&pio {
+	i2c2_default: i2c2_default {
+		pins_cmd_dat { /* I2C 400KHz */
+			pinmux = <PINMUX_GPIO134__FUNC_SCL2>,
+				<PINMUX_GPIO135__FUNC_SDA2>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_100>;
+			mediatek,drive-strength-adv = <5>; //EH: 1/3/5/7(max)
+			input-enable;
+		};
+	};
+	i2c2_sleep: i2c2_sleep {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO134__FUNC_SCL2>,
+				<PINMUX_GPIO135__FUNC_SDA2>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_000>;
+			mediatek,drive-strength-adv = <1>; //EH: 1/3/5/7(max)
+		};
+	};
+	backlight_pins_amb_pwm: bl_amb_pwm {
+		pins_cmd_dat {
+#ifdef RT4539_BACKLIGHT_USE_PWM_MODE
+			/* PWM mode */
+			pinmux = <PINMUX_GPIO84__FUNC_DISP_PWM>;
+			bias-pull-down;
+			input-enable;
+#else
+			/* I2C mode */
+			pinmux = <PINMUX_GPIO84__FUNC_GPIO84>;
+			bias-pull-down;
+			output-low;
+#endif
+			drive-strength = <0>;
+		};
+	};
+};
+
+&disp_pwm {
+#ifdef RT4539_BACKLIGHT_USE_PWM_MODE
+	status = "okay";
+#else
+	status = "okay";
+	//status = "disabled"; /* Cannot disable it. Otherwise Kernel panics! */
+#endif
+};
+
+&i2c2 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&i2c2_default>;
+	pinctrl-1 = <&i2c2_sleep>;
+
+	tps65132@3e {
+		compatible = "tps65132";
+		reg = <0x3e>;
+
+		bias_vpos: outp {
+			regulator-name = "LCD_AVDD";
+			regulator-min-microvolt = <4000000>;
+			regulator-max-microvolt = <6000000>;
+			enable-gpios = <&pio 39 0>;
+			regulator-boot-on;
+		};
+
+		bias_vneg: outn {
+			regulator-name = "LCD_AVEE";
+			regulator-min-microvolt = <4000000>;
+			regulator-max-microvolt = <6000000>;
+			enable-gpios = <&pio 38 0>;
+			regulator-boot-on;
+		};
+	};
+
+	bl_amb: backlight_amber@3c {
+		compatible = "richtek,rt4539";
+		pinctrl-names = "default";
+		pinctrl-0 = <&backlight_pins_amb_pwm>;
+		reg = <0x3c>;
+
+		enable-gpios = <&pio 99 GPIO_ACTIVE_HIGH>;
+
+		enable-post-delay = <20>; /* ms */
+		screen-on-backlight-off-pre-delay = <20>; /* ms */
+		screen-off-backlight-off-pre-delay = <20>; /* ms */
+		// disp-off-to-on-delay = <100>; /* ms */ /* total delay = enable-post-delay + disp-off-to-on-delay */
+		// disp-off-to-on-delay-timeout = <300>; /* ms */
+
+		label = "lcd-backlight-amber";
+		max-brightness = <255>;
+		max-hw-brightness = <4095>;
+		off-hw-brightness-thresh = <16>; /* 0 =>screen off backlight off; 1-16 =>screen on backlight off */
+		min-brightness = <0>;
+		led_mode = <6>;
+		default-state = "off"; /* Default off at booting */
+#ifdef RT4539_BACKLIGHT_USE_PWM_MODE
+		pwms = <&disp_pwm 0 5000000>; // 200Hz
+		pwm-names = "pwm-amb";
+		pwm-sample-rate = <0x03>; /* 2MHz for PWM 200Hz */
+		//control = <0x0>; /* PWM mode (default) */
+#else
+		control = <0x01>; /* I2C mode */
+#endif
+		time-ctrl = <0x1F>; /* Slope Time: 128ms, Smoothing: No, Fade IN/OUT: 64us */
+		time-ctrl-for-off = <0x17>; /* Backlight off: Slope Time: 8ms, Smoothing: No, Fade IN/OUT: 64us */
+		fade-off-min-hw-brightness = <240>; /* min. HW brightness threshold to wait for the fading off time */
+		reg0x08 = <0x02>; /* Soft start time control: 128us */
+		reg0x09 = <0x79>; /* Enable PFM: 31.15KHz */
+
+		fbs = <1 1 0 1 0 0>;
+		//current = <0x82>; // 20mA(default)
+	};
+};
+
+&pio {
+	mtkfb_pins_lcm_rst_out1_gpio: lcm_rst_out1_gpio {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO85__FUNC_GPIO85>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+
+	mtkfb_pins_lcm_rst_out0_gpio: lcm_rst_out0_gpio {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO85__FUNC_GPIO85>;
+			slew-rate = <1>;
+			output-low;
+		};
+	};
+	mtkfb_pins_lcm_dsi_te: lcm_dsi_te {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO83__FUNC_DSI_TE>;
+		};
+	};
+};
+
+&mtkfb {
+	pinctrl-names =  "lcm_rst_out1_gpio", "lcm_rst_out0_gpio",
+		"mode_te_te";
+	pinctrl-0 = <&mtkfb_pins_lcm_rst_out1_gpio>;
+	pinctrl-1 = <&mtkfb_pins_lcm_rst_out0_gpio>;
+	pinctrl-2 = <&mtkfb_pins_lcm_dsi_te>;
+	status = "okay";
+};
+
+&dispsys_config {
+	pinctrl-names =
+		"lcm_rst_out1_gpio", "lcm_rst_out0_gpio",
+		"mode_te_te";
+	pinctrl-0 = <&mtkfb_pins_lcm_rst_out1_gpio>;
+	pinctrl-1 = <&mtkfb_pins_lcm_rst_out0_gpio>;
+	pinctrl-2 = <&mtkfb_pins_lcm_dsi_te>;
+	status = "okay";
+
+	mboxes = <&gce 0 2000 CMDQ_THR_PRIO_4>,
+		<&gce 1 0 CMDQ_THR_PRIO_4>,
+		<&gce 2 0 CMDQ_THR_PRIO_4>,
+		<&gce 3 CMDQ_NO_TIMEOUT CMDQ_THR_PRIO_2>,
+		<&gce 4 0 CMDQ_THR_PRIO_4>,
+		<&gce 6 0 CMDQ_THR_PRIO_3>;
+
+	/* Disable MTK_DRM_OPT_IDLE_MGR and MTK_DRM_OPT_IDLEMGR_* */
+	helper-value = <0>, /*MTK_DRM_OPT_STAGE*/
+		<1>, /*MTK_DRM_OPT_USE_CMDQ*/
+		<1>, /*MTK_DRM_OPT_USE_M4U*/
+		<1>, /*MTK_DRM_OPT_MMQOS_SUPPORT*/
+		<1>, /*MTK_DRM_OPT_MMDVFS_SUPPORT*/
+		<0>, /*MTK_DRM_OPT_SODI_SUPPORT*/
+		<0>, /*MTK_DRM_OPT_IDLE_MGR*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_SWTCH_DECOUPLE*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_BY_REPAINT*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_ENTER_ULPS*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_KEEP_LP11*/
+		<0>, /*MTK_DRM_OPT_DYNAMIC_RDMA_GOLDEN_SETTING*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_DISABLE_ROUTINE_IRQ*/
+		<0>, /*MTK_DRM_OPT_MET_LOG*/
+		<1>, /*MTK_DRM_OPT_USE_PQ*/
+		<1>, /*MTK_DRM_OPT_ESD_CHECK_RECOVERY*/
+		<1>, /*MTK_DRM_OPT_ESD_CHECK_SWITCH*/
+		<1>, /*MTK_DRM_OPT_PRESENT_FENCE*/
+		<0>, /*MTK_DRM_OPT_RDMA_UNDERFLOW_AEE*/
+		<1>, /*MTK_DRM_OPT_DSI_UNDERRUN_AEE*/
+		<1>, /*MTK_DRM_OPT_HRT*/
+		<1>, /*MTK_DRM_OPT_HRT_MODE*/
+		<0>, /*MTK_DRM_OPT_DELAYED_TRIGGER*/
+		<1>, /*MTK_DRM_OPT_OVL_EXT_LAYER*/
+		<0>, /*MTK_DRM_OPT_AOD*/
+		<1>, /*MTK_DRM_OPT_RPO*/
+		<0>, /*MTK_DRM_OPT_DUAL_PIPE*/
+		<0>, /*MTK_DRM_OPT_DC_BY_HRT*/
+		<0>, /*MTK_DRM_OPT_OVL_WCG*/
+		<0>, /*MTK_DRM_OPT_OVL_SBCH*/
+		<1>, /*MTK_DRM_OPT_COMMIT_NO_WAIT_VBLANK*/
+		<0>, /*MTK_DRM_OPT_MET*/
+		<0>, /*MTK_DRM_OPT_REG_PARSER_RAW_DUMP*/
+		<0>, /*MTK_DRM_OPT_VP_PQ*/
+		<0>, /*MTK_DRM_OPT_GAME_PQ*/
+		<0>, /*MTK_DRM_OPT_MMPATH*/
+		<0>, /*MTK_DRM_OPT_HBM*/
+		<0>, /*MTK_DRM_OPT_VDS_PATH_SWITCH*/
+		<0>, /*MTK_DRM_OPT_LAYER_REC*/
+		<1>, /*MTK_DRM_OPT_CLEAR_LAYER*/
+		<1>, /*MTK_DRM_OPT_LFR*/
+		<0>, /*MTK_DRM_OPT_SF_PF*/
+		<1>, /*MTK_DRM_OPT_DYN_MIPI_CHANGE*/
+		<0>, /*MTK_DRM_OPT_PRIM_DUAL_PIPE*/
+		<0>, /*MTK_DRM_OPT_MSYNC2_0*/
+		<0>, /*MTK_DRM_OPT_VIRTUAL_DISP*/
+		<0>; /*MTK_DRM_OPT_MML_PRIMARY*/
+};
+
+&mt6358_vrf18_reg {
+	regulator-boot-on;
+};
+
+&dsi0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	panel1@0 {
+		compatible = "sharp,nt36523n,vdo,120hz";
+		reg = <0>;
+		vddi-supply = <&mt6358_vrf18_reg>;
+		reset-gpios = <&pio 85 0>;
+		vpos-supply = <&bias_vpos>;
+		vneg-supply = <&bias_vneg>;
+		sample-id1 = <0>;
+		sample-id2 = <0>;
+		sample-id3 = <0>;
+		islcmfound = <0>;
+		port {
+			panel_in1: endpoint {
+				remote-endpoint = <&dsi_out>;
+			};
+		};
+	};
+	ports {
+		port {
+			dsi_out: endpoint {
+				remote-endpoint = <&panel_in1>;
+			};
+		};
+	};
+};
+
+/* GPS GPIO standardization start */
+&gps {
+	status = "disabled";
+};
+/* GPS GPIO standardization end */
+
+&pio {
+	aud_pins_extamp_low: rt9101_extamp_disable {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO158__FUNC_GPIO158>, /* GPO_SPK_R_EN */
+				<PINMUX_GPIO159__FUNC_GPIO159>; /* GPO_SPK_L_EN */
+			bias-pull-down;
+			output-low;
+		};
+	};
+	aud_pins_extamp_high: rt9101_extamp_enable {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO158__FUNC_GPIO158>, /* GPO_SPK_R_EN */
+				<PINMUX_GPIO159__FUNC_GPIO159>; /* GPO_SPK_L_EN */
+			bias-pull-up;
+			output-high;
+		};
+	};
+
+};
+
+/* TOUCH: start */
+&pio {
+	ilitek_pins_default: ilitek_default {
+		pins_rst {
+			pinmux = <PINMUX_GPIO40__FUNC_GPIO40>;
+			output-low;
+		};
+	};
+	ilitek_pins_active: ilitek_active {
+		pins_cmd_dat { /* I2C >400KHz */
+			pinmux = <PINMUX_GPIO130__FUNC_SCL0>,
+				<PINMUX_GPIO131__FUNC_SDA0>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_110>;
+			mediatek,drive-strength-adv = <7>; //EH: 1/3/5/7(max)
+		};
+		pins_irq {
+			pinmux = <PINMUX_GPIO12__FUNC_GPIO12>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+	ilitek_pins_sleep: ilitek_sleep {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO130__FUNC_SCL0>,
+				<PINMUX_GPIO131__FUNC_SDA0>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_000>; /* ili2910 reference design i2c bus has pullup 4.7k at client side */
+			mediatek,drive-strength-adv = <1>; //EH: 1/3/5/7(max)
+		};
+	};
+};
+
+ROOT_NODE {
+	vctp3v3: regulator_vctp3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "VCTP-3V3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpios = <&pio 154 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <1000000>; /* 904348->904347; 800000 */
+	ilitek@41 {
+		compatible = "tchip,ilitek";
+		pinctrl-names = "default", "active", "sleep";
+		pinctrl-0 = <&ilitek_pins_default>;
+		pinctrl-1 = <&ilitek_pins_active>;
+		pinctrl-2 = <&ilitek_pins_sleep>;
+		reg = <0x41>;
+		ilitek,reset-gpio = <&pio 40 GPIO_ACTIVE_HIGH>;
+		ilitek,irq-gpio = <&pio 12 GPIO_ACTIVE_HIGH>;
+		interrupt-parent = <&pio>;
+		interrupts = <12 IRQ_TYPE_EDGE_FALLING>;
+		ilitek,vdd = "vdd";
+		vdd-supply = <&vctp3v3>;
+		//wakeup-source;
+	};
+};
+/* TOUCH: end */
+
+&i2c3 {
+	status = "disabled";
+};
+
+&i2c4 {
+	status = "disabled";
+};
+
+&pio {
+	i2c5_default: i2c5_default {
+		pins_cmd_dat { /* I2C 400KHz */
+			pinmux = <PINMUX_GPIO140__FUNC_SCL5>,
+				<PINMUX_GPIO141__FUNC_SDA5>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_100>;
+			mediatek,drive-strength-adv = <5>; //EH: 1/3/5/7(max)
+			input-enable;
+		};
+	};
+	i2c5_sleep: i2c5_sleep {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO140__FUNC_SCL5>,
+				<PINMUX_GPIO141__FUNC_SDA5>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_000>;
+			mediatek,drive-strength-adv = <1>; //EH: 1/3/5/7(max)
+		};
+	};
+	backlight_pins_wht_pwm: bl_wht_pwm {
+		pins_cmd_dat {
+#ifdef RT4539_BACKLIGHT_USE_PWM_MODE
+			/* PWM mode */
+			pinmux = <PINMUX_GPIO95__FUNC_PWM_0>;
+			bias-pull-down;
+			input-enable;
+#else
+			/* I2C mode */
+			pinmux = <PINMUX_GPIO95__FUNC_GPIO95>;
+			bias-pull-down;
+			output-low;
+#endif
+			drive-strength = <0>;
+		};
+	};
+};
+
+&pwm {
+#ifdef RT4539_BACKLIGHT_USE_PWM_MODE
+	status = "okay";
+#else
+	status = "disabled";
+#endif
+};
+
+&i2c5 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&i2c5_default>;
+	pinctrl-1 = <&i2c5_sleep>;
+
+	bl_wht: backlight_white@3c {
+		compatible = "richtek,rt4539";
+		pinctrl-names = "default";
+		pinctrl-0 = <&backlight_pins_wht_pwm>;
+		reg = <0x3c>;
+
+		enable-gpios = <&pio 98 GPIO_ACTIVE_HIGH>;
+
+		enable-post-delay = <20>; /* ms */
+		screen-on-backlight-off-pre-delay = <20>; /* ms */
+		screen-off-backlight-off-pre-delay = <20>; /* ms */
+		// disp-off-to-on-delay = <100>; /* ms */ /* total delay = enable-post-delay + disp-off-to-on-delay */
+		// disp-off-to-on-delay-timeout = <300>; /* ms */
+
+		label = "lcd-backlight";
+		max-brightness = <255>;
+		max-hw-brightness = <4095>;
+		off-hw-brightness-thresh = <16>; /* 0 =>screen off backlight off; 1-16 =>screen on backlight off */
+		min-brightness = <0>;
+		led_mode = <6>;
+		default-state = "off"; /* Sync with the Bootloader bootlogo brightness */
+#ifdef RT4539_BACKLIGHT_USE_PWM_MODE
+		pwms = <&pwm 0 5000000>; // 200Hz
+		pwm-names = "pwm-wht";
+		pwm-sample-rate = <0x03>; /* 2MHz for PWM 200Hz */
+		//control = <0x0>; /* PWM mode (default) */
+#else
+		control = <0x01>; /* I2C mode */
+#endif
+		time-ctrl = <0x1F>; /* Slope Time: 128ms, Smoothing: No, Fade IN/OUT: 64us */
+		time-ctrl-for-off = <0x17>; /* Backlight off: Slope Time: 8ms, Smoothing: No, Fade IN/OUT: 64us */
+		fade-off-min-hw-brightness = <240>; /* min. HW brightness threshold to wait for the fading off time */
+		reg0x08 = <0x02>; /* Soft start time control: 128us */
+		reg0x09 = <0x79>; /* Enable PFM: 31.15KHz */
+
+		fbs = <1 1 0 1 0 0>;
+		//current = <0x78>; // 13.04mA
+	};
+};
+
+&i2c6 {
+	status = "disabled";
+};
+
+/* WACOM: start */
+&pio {
+	wacom_default: wacom_default {
+		pins_irq {
+			pinmux = <PINMUX_GPIO9__FUNC_GPIO9>;
+			bias-disable;  /* external pullup by VDD2_1V8_WP */
+			input-enable;
+		};
+		pins_reset {
+			pinmux = <PINMUX_GPIO88__FUNC_GPIO88>;
+			output-low;
+		};
+	};
+	wacom_active: wacom_active {
+		pins_cmd_dat { /* I2C >400KHz */
+			pinmux = <PINMUX_GPIO148__FUNC_SCL9>,
+				<PINMUX_GPIO149__FUNC_SDA9>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_111>;
+			mediatek,drive-strength-adv = <7>; //EH: 1/3/5/7(max)
+		};
+	};
+	wacom_sleep: wacom_sleep {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO148__FUNC_SCL9>,
+				<PINMUX_GPIO149__FUNC_SDA9>;
+			bias-disable;
+			//bias-pull-down = <MTK_PULL_SET_RSEL_000>;
+			//mediatek,drive-strength-adv = <1>; //EH: 1/3/5/7(max)
+		};
+	};
+};
+
+ROOT_NODE {
+	wacom1v8: regulator_wacom1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "WACOM-1V8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpios = <&pio 150 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		//startup-delay-us = <100>; /* not required for the current design */
+	};
+	wacom3v3: regulator_wacom3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "WACOM-3V3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpios = <&pio 41 GPIO_ACTIVE_HIGH>; /* wacom 3.3v enabled by 1.8v => but still keep gpio here */
+		enable-active-high;
+		/* WACOM-1V8 -> WACOM-3V3 -> startup-delay-us(3000) for Voltage stable and RESET LOW (>1ms) */
+		startup-delay-us = <3000>;
+	};
+};
+
+&i2c9 {
+	status = "okay";
+	clock-frequency = <1000000>; /* 904348->904347; 800000 */
+#if 0
+	i2c-hid-dev@09 {
+		compatible = "hid-over-i2c";
+		reg = <0x09>;
+		hid-descr-addr = <0x01>;
+		pinctrl-names = "default", "active", "sleep";
+		pinctrl-0 = <&wacom_default>;
+		pinctrl-1 = <&wacom_active>;
+		pinctrl-2 = <&wacom_sleep>;
+		interrupt-parent = <&pio>;
+		interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
+		vdd-supply = <&wacom1v8>;
+		vddl-supply = <&wacom3v3>;
+		post-power-on-delay-ms = <110>; /* >100ms because wacom init time: 100ms(max) */
+		reset-gpios = <&pio 88 GPIO_ACTIVE_LOW>;
+		//touchscreen-inverted-x;
+		//touchscreen-inverted-y;
+	};
+#else
+	wacom-i2c@09 {
+		compatible = "emr,wacom_i2c";
+		reg = <0x09>;
+		pinctrl-names = "default", "active", "sleep";
+		pinctrl-0 = <&wacom_default>;
+		pinctrl-1 = <&wacom_active>;
+		pinctrl-2 = <&wacom_sleep>;
+		interrupt-parent = <&pio>;
+		interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
+		vdd-supply = <&wacom1v8>;
+		vddl-supply = <&wacom3v3>;
+		post-power-on-delay-ms = <110>; /* >100ms because wacom init time: 100ms(max) */
+		reset-gpios = <&pio 88 GPIO_ACTIVE_LOW>;
+	};
+#endif
+};
+/* WACOM: end */
+
+&regulator_vibrator {
+	status = "disabled";
+};
+
+&accdet {
+	status = "disabled";
+};
+
+&mt6358_vibr_reg {
+	regulator-min-microvolt = <2800000>; /* enable pin VIH RT4812: 1.2v(min), RT9101: 2v(min)*/
+	regulator-max-microvolt = <2800000>;
+	regulator-enable-ramp-delay = <1000>;
+};
+
+&sound {
+	pinctrl-names = "default", "extamp-pullhigh", "extamp-pulllow";
+	pinctrl-0 = <&aud_pins_extamp_low>;
+	pinctrl-1 = <&aud_pins_extamp_high>;
+	pinctrl-2 = <&aud_pins_extamp_low>;
+	extamp-supply = <&mt6358_vibr_reg>;  /* 5v power for spk AMP enable */
+};
+
+&mt6358codec {
+	mediatek,mic-type = <2>;
+};
+
+/* Micro SD Card: start */
+&pio {
+	mmc0_pins_default: mmc0default {
+		pins_cd {
+			pinmux = <PINMUX_GPIO7__FUNC_GPIO7>;
+			bias-pull-up;
+		};
+	};
+	mmc0_pins_normal: mmc0@0 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO58__FUNC_MSDC0_DAT0>,
+				<PINMUX_GPIO59__FUNC_MSDC0_DAT1>,
+				<PINMUX_GPIO60__FUNC_MSDC0_DAT2>,
+				<PINMUX_GPIO61__FUNC_MSDC0_DAT3>,
+				<PINMUX_GPIO56__FUNC_MSDC0_CMD>;
+			drive-strength = <3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+		pins_clk {
+			pinmux = <PINMUX_GPIO55__FUNC_MSDC0_CLK>;
+			drive-strength = <3>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+	};
+	mmc0_pins_uhs: mmc0@1 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO58__FUNC_MSDC0_DAT0>,
+				<PINMUX_GPIO59__FUNC_MSDC0_DAT1>,
+				<PINMUX_GPIO60__FUNC_MSDC0_DAT2>,
+				<PINMUX_GPIO61__FUNC_MSDC0_DAT3>,
+				<PINMUX_GPIO56__FUNC_MSDC0_CMD>;
+			drive-strength = <3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+		pins_clk {
+			pinmux = <PINMUX_GPIO55__FUNC_MSDC0_CLK>;
+			drive-strength = <3>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+	};
+	mmc0_pins_pull_down: mmc0@2 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO58__FUNC_MSDC0_DAT0>,
+				<PINMUX_GPIO59__FUNC_MSDC0_DAT1>,
+				<PINMUX_GPIO60__FUNC_MSDC0_DAT2>,
+				<PINMUX_GPIO61__FUNC_MSDC0_DAT3>,
+				<PINMUX_GPIO56__FUNC_MSDC0_CMD>;
+			drive-strength = <0>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+		pins_clk {
+			pinmux = <PINMUX_GPIO55__FUNC_MSDC0_CLK>;
+			drive-strength = <0>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+		};
+	};
+};
+
+&mt6358_vmch_eint_high {
+	regulator-max-microvolt = <3000000>;
+	/** Refer to mmc_power_up(): (MMC_POWER_UP case)
+	 *  VMCH -> mmc_delay(host->ios.power_delay_ms)
+	 *
+	 *  If "post-power-on-delay-ms" not defined, the default value of host->ios.power_delay_ms is 10.
+	 */
+	//regulator-enable-ramp-delay = <1000>; /* wait for stable */
+};
+
+&mt6358_vsim2_reg {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+};
+
+ROOT_NODE {
+	vqmmc_sdcard: regulator-vqmmc-sdcard {
+		compatible = "regulator-gpio";
+		status = "okay";
+		regulator-name = "SDCARD-IO";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3000000>;
+		//regulator-settling-time-us = <1>;
+		regulator-settling-time-up-us   = <1>;
+		regulator-settling-time-down-us = <2>;
+		gpios = <&pio 157 GPIO_ACTIVE_HIGH>; /* GPO_SD_SEL: HIGH=>1.8V; LOW=>3.0V */
+		gpios-states = <0>; /* default state: 3.0V */
+		enable-active-high;
+		//regulator-type = "voltage";
+		states = <1800000 1>, <3000000 0>;
+		vin-supply = <&mt6358_vsim2_reg>;
+	};
+};
+
+&mmc0 {
+	host-index = <1>; /* 0:eMMC 1:SD */
+	status = "okay";
+	pinctrl-names = "default", "state_normal", "state_uhs", "pull_down";
+	pinctrl-0 = <&mmc0_pins_default>;
+	pinctrl-1 = <&mmc0_pins_normal>;
+	pinctrl-2 = <&mmc0_pins_uhs>;
+	pinctrl-3 = <&mmc0_pins_pull_down>;
+	bus-width = <4>;
+	max-frequency = <200000000>;
+	ocr-voltage = <0x00030000>; /* MMC_VDD_28_29 + MMC_VDD_29_30 */
+
+	cap-sd-highspeed;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	sd-uhs-ddr50;
+	no-mmc;
+	no-sdio;
+
+	disable-wp;
+	cd-debounce-delay-ms = <0>;
+	cd-gpios = <&pio 7 GPIO_ACTIVE_LOW>; /* EINT_SD_SIM */
+
+	hs400-ds-delay = <0x12814>;
+	vmmc-supply = <&mt6358_vmch_eint_high>;
+	vqmmc-supply = <&vqmmc_sdcard>;
+	sd-poweroff-reset-signal-volt;
+
+	dvfsrc-vcore-supply = <&dvfsrc_vcore>;
+	req-vcore = <650000>;
+};
+/* Micro SD Card: end */
+
+/* SDIO/WLAN/BT: start */
+&pio {
+	wlan_rst_pins_default: wlan_rst_default {
+		pins_reset {
+			pinmux = <PINMUX_GPIO89__FUNC_GPIO89>; /* GPIO_WF_SYSRST_B */
+			output-low;
+		};
+	};
+	mmc1_pins_normal: mmc1@0 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO73__FUNC_MSDC1_DAT0>,
+				<PINMUX_GPIO74__FUNC_MSDC1_DAT1>,
+				<PINMUX_GPIO75__FUNC_MSDC1_DAT2>,
+				<PINMUX_GPIO76__FUNC_MSDC1_DAT3>,
+				<PINMUX_GPIO72__FUNC_MSDC1_CMD>;
+			drive-strength = <2>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+		pins_clk {
+			pinmux = <PINMUX_GPIO71__FUNC_MSDC1_CLK>;
+			drive-strength = <2>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+		};
+	};
+	mmc1_pins_uhs: mmc1@1 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO73__FUNC_MSDC1_DAT0>,
+				<PINMUX_GPIO74__FUNC_MSDC1_DAT1>,
+				<PINMUX_GPIO75__FUNC_MSDC1_DAT2>,
+				<PINMUX_GPIO76__FUNC_MSDC1_DAT3>,
+				<PINMUX_GPIO72__FUNC_MSDC1_CMD>;
+			drive-strength = <3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+		pins_clk {
+			pinmux = <PINMUX_GPIO71__FUNC_MSDC1_CLK>;
+			drive-strength = <3>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+		};
+	};
+	mmc1_pins_eint: mmc1@2 {
+		pins_dat1 {
+			pinmux = <PINMUX_GPIO74__FUNC_GPIO74>;
+			drive-strength = <3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+	};
+	mmc1_pins_dat1: mmc1@3 {
+		pins_dat1 {
+			pinmux = <PINMUX_GPIO74__FUNC_MSDC1_DAT1>;
+			drive-strength = <3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+			input-enable;
+		};
+	};
+	mmc1_pins_poweron: mmc1@4 {
+		pins_i2s1_0 {
+			pinmux = <PINMUX_GPIO50__FUNC_I2S1_DO>,
+				<PINMUX_GPIO51__FUNC_I2S1_BCK>,
+				<PINMUX_GPIO52__FUNC_I2S1_LRCK>;
+			bias-disable;
+			//bias-pull-down;
+			input-enable;
+		};
+		pins_i2s2_0 {
+			pinmux = <PINMUX_GPIO53__FUNC_I2S2_DI>;
+			bias-pull-down;
+			input-enable;
+		};
+	};
+	mmc1_pins_poweroff: mmc1@5 {
+		pins_i2s1_0 {
+			pinmux = <PINMUX_GPIO50__FUNC_GPIO50>,
+				<PINMUX_GPIO51__FUNC_GPIO51>,
+				<PINMUX_GPIO52__FUNC_GPIO52>;
+			//bias-disable;
+			bias-pull-down;
+			input-enable;
+		};
+		pins_i2s2_0 {
+			pinmux = <PINMUX_GPIO53__FUNC_GPIO53>;
+			bias-pull-down;
+			input-enable;
+		};
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO73__FUNC_GPIO73>,
+				<PINMUX_GPIO74__FUNC_GPIO74>,
+				<PINMUX_GPIO75__FUNC_GPIO75>,
+				<PINMUX_GPIO76__FUNC_GPIO76>,
+				<PINMUX_GPIO72__FUNC_GPIO72>;
+			drive-strength = <0>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+		};
+		pins_clk {
+			pinmux = <PINMUX_GPIO71__FUNC_GPIO71>;
+			drive-strength = <0>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
+		};
+	};
+};
+
+&mt6358_vcn18_reg {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+};
+
+&mt6358_vmc_reg {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+};
+
+ROOT_NODE {
+	vmmc_sdio: regulator-vmmc-sdio {
+		compatible = "regulator-fixed";
+		status = "okay";
+		regulator-name = "WLAN-3V3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		/** Refer to mmc_power_up():
+		 *  GPIO_WF_SYSRST_B LOW ->
+		 *  (MMC_POWER_UP case) WLAN-3V3 -> startup-delay-us(2000) -> VCN18 -> VMC(1.8) -> mmc_delay(host->ios.power_delay_ms=15)
+		 *
+		 *  If "post-power-on-delay-ms" not defined, the default value of host->ios.power_delay_ms is 10.
+		 */
+		startup-delay-us =   <2000>; /* wait for >2.85V */ /* must check the waveform measurement */
+		off-on-delay-us  = <200000>; /* off_on_delay: 200ms */
+		gpios = <&pio 152 GPIO_ACTIVE_HIGH>; /* MT7902_PWR_EN */
+		enable-active-high;
+		//regulator-boot-on;   /* turn it on early */
+		//regulator-always-on; /* CANNOT turn it off */
+	};
+
+	vqmmc_sdio: regulator-vqmmc-sdio {
+		compatible = "regulator-fixed";
+		status = "okay";
+		pinctrl-names = "default";
+		pinctrl-0 = <&wlan_rst_pins_default>;
+		regulator-name = "WLAN-RST";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		/** Refer to mmc_power_up():
+		 *  GPIO_WF_SYSRST_B LOW ->
+		 *  (MMC_POWER_UP case) WLAN-3V3 -> startup-delay-us(2000) -> VCN18 -> VMC(1.8) -> mmc_delay(host->ios.power_delay_ms=15)
+		 *  (MMC_POWER_ON case) (>1ms for RESET LOW) -> GPIO_WF_SYSRST_B HIGH -> delay(200ms) -> mmc_delay(host->ios.power_delay_ms=15)
+		 *
+		 *  If "post-power-on-delay-ms" not defined, the default value of host->ios.power_delay_ms is 10.
+		 */
+		startup-delay-us = <200000>; /* 200ms: refer to wifi_pwrseq in tb8781p3_64_wifi_7902.dts */
+		gpios = <&pio 89 GPIO_ACTIVE_HIGH>; /* GPIO_WF_SYSRST_B */
+		enable-active-high;
+		//regulator-boot-on;   /* turn it on early */ /* BUGGY: don't use "regulator-boot-on" & "vin-supply" together */
+		/* Comment "regulator-always-on" because it would prevent Wi-Fi/BT chip reset */
+		//regulator-always-on; /* CANNOT turn it off */
+	};
+
+	mediatek,mt79xx-wifi {
+		compatible = "mediatek,mediatek_wifi_ctrl";
+		interrupt-parent = <&pio>;
+		interrupts = <21 IRQ_TYPE_EDGE_FALLING>; /* WoWLAN */
+		status = "okay";
+	};
+};
+
+&mmc1 {
+	status = "okay";
+	compatible = "mediatek,mt8781-sd";
+	pinctrl-names = "state_normal", "state_uhs", "state_eint",
+			"state_dat1", "power-on", "power-off";
+	pinctrl-0 = <&mmc1_pins_normal>;
+	pinctrl-1 = <&mmc1_pins_uhs>;
+	pinctrl-2 = <&mmc1_pins_eint>;
+	pinctrl-3 = <&mmc1_pins_dat1>;
+	pinctrl-4 = <&mmc1_pins_poweron>;
+	pinctrl-5 = <&mmc1_pins_poweroff>;
+	eint-gpios = <&pio 74 GPIO_ACTIVE_HIGH>; /* MSDC1_DAT1 EINT74 */
+	bus-width = <4>;
+	max-frequency = <200000000>;
+	ocr-voltage = <0x00030000>;
+
+	cap-sd-highspeed;
+	sd-uhs-sdr104;
+	sd-uhs-sdr50;
+	sd-uhs-sdr25;
+	keep-power-in-suspend;
+	wakeup-source; /*enable-sdio-wakeup;*/
+	cap-sdio-irq;
+	////cap-sdio-async-int; /* SDIO DAT1/EINT and SDIO async IRQ */
+
+	no-mmc;
+	no-sd;
+	non-removable;
+
+	post-power-on-delay-ms = <15>; /* 15ms */
+	vmmc-supply = <&vmmc_sdio>;
+	vqmmc-supply = <&vqmmc_sdio>;
+	vioa-supply = <&mt6358_vcn18_reg>;
+	viob-supply = <&mt6358_vmc_reg>;
+
+	/* The runtime autosuspend works if SDIO async IRQ is enabled. */
+	//autosuspend-delay = <50>; /* The default value is 50ms. */
+};
+/* SDIO/WLAN/BT: end */
+
+&timer {
+	/** "arm,no-tick-in-suspend;"
+	 *  - Define to inject the sleep time (timekeeping_inject_sleeptime) at rtc_resume() via rtc0.
+	 *  - Undefine to inject the sleep time (__timekeeping_inject_sleeptime) at timekeeping_resume()
+	 *    via ARM arch_sys_counter (clocksource_counter) (drivers/clocksource/arm_arch_timer.c).
+	 */
+	arm,no-tick-in-suspend;
+};
+
+&i2c8 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&i2c8_default>;
+	pinctrl-1 = <&i2c8_sleep>;
+
+	rtc0: s35390a@30 {
+		compatible = "sii,s35390a";
+		pinctrl-names = "default";
+		pinctrl-0 = <&s35390a_default>;
+		reg = <0x30>;
+		interrupt-parent = <&pio>;
+#if 1
+		interrupts = <14 IRQ_TYPE_LEVEL_LOW>; /* RTC_INT1 */
+#else
+		interrupts = <13 IRQ_TYPE_LEVEL_LOW>; /* RTC_INT2 */
+		use-int2;
+#endif
+		wakeup-source;
+		default-time = <2023 3 1 0 0 0>;
+	};
+};
+
+&pio {
+	i2c8_default: i2c8_default {
+		pins_cmd_dat { /* I2C 100KHz */
+			pinmux = <PINMUX_GPIO146__FUNC_SCL8>,
+				<PINMUX_GPIO147__FUNC_SDA8>;
+			/**
+			 * bias-pull-up: (PU)
+			 *    RSEL_000: 75KΩ (40K-190K)
+			 *    RSEL_001: 10KΩ (8K-15K)
+			 *    RSEL_010:  5KΩ (3.5K-7K)
+			 *    RSEL_011:  4KΩ (3K-5.5K)
+			 *    RSEL_100:  3KΩ (2.5K-4.5K)
+			 *    RSEL_101:  2KΩ (1.5K-2.7K)
+			 *    RSEL_110:1.5KΩ (1K-2K)
+			 *    RSEL_111:  1KΩ (0.75K-1.5K)
+			 * bias-pull-down: (PD)
+			 *    RSEL_X00: 75KΩ (40K-190K)
+			 *    RSEL_X10: 75KΩ (40K-190K)
+			 *    RSEL_X01:  5KΩ (3K-7K)
+			 *    RSEL_X11:  5KΩ (3K-7K)
+			 */
+			bias-pull-up = <MTK_PULL_SET_RSEL_010>;
+			mediatek,drive-strength-adv = <3>; //EH: 1/3/5/7(max)
+			input-enable;
+		};
+	};
+	i2c8_sleep: i2c8_sleep {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO146__FUNC_SCL8>,
+				<PINMUX_GPIO147__FUNC_SDA8>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_000>;
+			mediatek,drive-strength-adv = <1>; //EH: 1/3/5/7(max)
+		};
+	};
+	s35390a_default: s35390a_default {
+		pins_irq {
+			pinmux = <PINMUX_GPIO13__FUNC_GPIO13>, /* RTC_INT2 */
+				<PINMUX_GPIO14__FUNC_GPIO14>; /* RTC_INT1 */
+			bias-pull-up;
+			//bias-disable;
+			input-enable;
+		};
+	};
+};
+
+&mt6358_vio28_reg {
+	regulator-always-on;
+};
+
+&mt6358_vdram1_reg {
+	regulator-always-on;
+};
+
+&mt6358_vdram2_reg {
+	regulator-always-on;
+};
+
+&mt6358_vbif28_reg {
+	regulator-always-on;
+};
+
+&mt6358_vaux18_reg {
+	regulator-always-on;
+};
+
+&mt6358_vsim1_reg {
+	regulator-min-microvolt = <0>;
+	regulator-max-microvolt = <0>;
+};
+
+&pio {
+	kpd_pins_default: kpddefault {
+		pins_cols {
+			pinmux = <PINMUX_GPIO66__FUNC_KPCOL0>,
+				 <PINMUX_GPIO67__FUNC_KPCOL1>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			input-enable;
+		};
+
+		pins_rows {
+			pinmux = <PINMUX_GPIO68__FUNC_KPROW0>,
+				 <PINMUX_GPIO69__FUNC_KPROW1>;
+			output-low;
+			bias-disable;
+		};
+	};
+};
+
+&keypad {
+	pinctrl-names = "default";
+	pinctrl-0 = <&kpd_pins_default>;
+	status = "okay";
+	mediatek,hw-map-num = <72>;
+	mediatek,hw-init-map = <KEY_VOLUMEDOWN KEY_F11 0 0 0 0 0 0 0 0 KEY_F12 0 0
+				0 0 0 0 0 0 0 0 0 0 0 0 0 0
+				0 0 0 0 0 0 0 0 0 0 0 0 0 0
+				0 0 0 0 0 0 0 0 0 0 0 0 0 0
+				0 0 0 0 0 0 0 0 0 0 0 0 0 0
+				0 0 0>; //114 87 88
+};
+
+//re-use vcn33_wifi_reg to enable VCN33_PMU
+&mt6358_vcn33_wifi_reg {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-always-on;
+};
+
+&pio {
+	i2c7_default: i2c7_default {
+		pins_i2c7 {
+			pinmux = <PINMUX_GPIO144__FUNC_SCL7>,
+				<PINMUX_GPIO145__FUNC_SDA7>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_111>; //Rset=6 (1.5k ohm) --> Rset=7 (1k ohm)
+			mediatek,drive-strength-adv = <7>; //EH: 1/3/5/7(max)
+		};
+	};
+	i2c7_sleep: i2c7_sleep {
+		pins_i2c7 {
+			pinmux = <PINMUX_GPIO144__FUNC_SCL7>,
+				<PINMUX_GPIO145__FUNC_SDA7>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_000>;
+			mediatek,drive-strength-adv = <1>; //EH: 1/3/5/7(max)
+		};
+	};
+};
+
+&i2c7 {
+	clock-frequency = <50000>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&i2c7_default>;
+	pinctrl-1 = <&i2c7_sleep>;
+
+	bat: battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3450000>; //3450mV? ; BQ27XXX_DM_TERMINATE_VOLTAGE, capacity=0%
+		energy-full-design-microwatt-hours = <34265000>; //8900mAhx3.85V=34265mWh ; BQ27XXX_DM_DESIGN_ENERGY
+		charge-full-design-microamp-hours = <8900000>; //8900mAh ; BQ27XXX_DM_DESIGN_CAPACITY
+	};
+
+	bq78z100: fuel-gauge@55 {
+		compatible = "ti,bq78z100";
+		reg = <0x55>;
+		//monitored-battery = <&bat>; //bq78z100 doesn't support dm_regs
+		charger = <&mt6375_chg>;
+	};
+};
+
+&mtk_gauge {
+	DISABLE_MTKBATTERY = <1>;
+	//disable-mtkbattery = <1>;
+};
+
+&pe {
+	gauge = <&bq78z100>;
+};
+
+&pe2 {
+	gauge = <&bq78z100>;
+};
+
+&pdc {
+	pd_vbus_upper_bound = <12000000>;
+	gauge = <&bq78z100>;
+
+	/* single charger */
+	//sc_charger_current = <3000000>; //3A
+	//sc_charger_current = <2500000>; //2.5A
+	sc_charger_current = <2000000>; //2A
+
+	/* dual charger in series*/
+	dcs_input_current = <3200000>;
+	//dcs_chg1_charger_current = <3000000>; //3A
+	//dcs_chg1_charger_current = <2500000>; //2.5A
+	dcs_chg1_charger_current = <2000000>; //2A
+	//dcs_chg2_charger_current = <3000000>; //3A
+	//dcs_chg2_charger_current = <2500000>; //2.5A
+	dcs_chg2_charger_current = <2000000>; //2A
+
+	/* dual charger */
+	dual_polling_ieoc = <450000>;
+	postcc_ieoc = <250000>;
+	slave_mivr_diff = <100000>;
+	vbat_threshold = <4150>;
+};
+
+&pe4 {
+	gauge = <&bq78z100>;
+};
+
+&pe5 {
+	gauge = <&bq78z100>;
+};
+
+&mt6375_typec {
+	//Water/Wet detection
+	tcpc,en_wd;
+	tcpc,en_wd_sbu_polling;
+	tcpc,en_wd_polling_only;
+	wd,sbu_calib_init = <1200>;	/* mV */
+	wd,sbu_pl_bound = <200>;	/* mV */
+	wd,sbu_pl_lbound_c2c = <1100>;	/* mV */
+	wd,sbu_pl_ubound_c2c = <2600>;	/* mV */
+	wd,sbu_ph_auddev = <100>;	/* mV */
+	//wd,sbu_ph_lbound = <888>;	/* mV */
+	wd,sbu_ph_lbound = <500>;	/* mV */ //for Nubia 120W PD charger C1 port issue
+	wd,sbu_ph_lbound1_c2c = <2850>;	/* mV */
+	wd,sbu_ph_ubound1_c2c = <3150>;	/* mV */
+	wd,sbu_ph_ubound2_c2c = <3800>;	/* mV */
+	wd,sbu_aud_ubound = <1600>;	/* mV */
+};
+
+&mt6375_typec_pd_data {
+	/*
+	* Fixed 5V, 500 mA <0x00019032>
+	* Fixed 5V, 1A <0x00019064>
+	* Fixed 5V, 2A <0x000190c8>
+	* Fixed 5V, 3A <0x0001912c>
+	* Fixed 9V, 500 mA <0x0002d032>
+	* Fixed 9V, 1A <0x0002d064>
+	* Fixed 5V, 1.5A <0x00019096>
+	* Fixed 9V, 2A <0x0002d0c8>
+	* Fixed 9V, 3A <0x0002d12c>
+	* (Fixed 12V, 3A <0x0003c12c>)
+	* X(Fixed 15V, 3A <0x0004b12c>)
+	* X(Fixed 20V, 3A <0x0006412c>)
+	* Variable 5-9V, 1A <0x8642d064>
+	* Variable 5-9V, 2A <0x8642d0c8>
+	* Variable 5-9V, 3A <0x8642d12c>
+	* PPS 3V~5.9V, 3A <0xC0761E3C>
+	*/
+
+	//Jagar's type-c as source: 5V, 500 mA
+	pd,source-pdo-size = <1>;
+	pd,source-pdo-data = <0x00019032>;
+	//pd,source-pdo-data = <0x0001912c>; //5V, 3A; for test only
+
+	//Jagar's type-c as sink: 5V,3A; 9V,3A; 12V,3A
+	pd,sink-pdo-size = <3>;
+	pd,sink-pdo-data = <0x0001912c 0x0002d12c 0x0003c12c>;
+};
+
+&charger {
+	//battery_cv = <4350000>; //--> sw jeita
+	max_charger_voltage = <13000000>; //13V, CHR_VIN:4-14V --> vbus_ov = <14500>; (dual charger-RT9471 VAC/VBUS: 3.9-13.5V;)
+	gauge = <&bq78z100>;
+
+	//ac_charger_current = <3000000>; //3A, max. 3.15A
+	//ac_charger_current = <2500000>; //2.5A
+	ac_charger_current = <2000000>; //2A
+
+	//charging_host_charger_current = <1500000>; //CDP charger initial value.
+	//max_dmivr_charger_current = <1800000>; //max. IAICR=3225mA, reset by this (< IAICR) if dynamic mivr (dmivr) is enabled
+
+	charger_configuration = <1>; //0: SINGLE_CHARGER ; 1: DUAL_CHARGERS_IN_SERIES
+	/* fast charging algo support */
+	fast_charging_indicator = <4>; //PDC_ID 1 << 2
+};
+
+&lk_charger {
+	/* enable_pe_plus; */
+	//max_charger_voltage = <6500000>; // <-- to 13V?
+	//fast_charge_voltage = <3000000>;
+
+	/* charging current */
+	//usb_charger_current = <500000>;
+	//ac_charger_current = <2050000>; //<-- to 3A?
+	//ac_charger_input_current = <3200000>;
+	//non_std_ac_charger_current = <500000>;
+	//charging_host_charger_current = <1500000>;
+	//ta_ac_charger_current = <3000000>;
+	//pd_charger_current = <500000>; //<-- to 3A? lk can support pd?
+
+	//boot_battery_voltage = <3450000>; //uA, defautl: 3450mA
+};
+
+&mt6375_chg {
+	//vbus_ov = <14500>; //with dual charger RT9471, we may change it to <= 13500mV or 14000mV.
+	ieoc = <250>; //mt6375 (single charger) termination current: 150 -> 250 mA
+
+	//chg_tmr = <10>; //change safety timer to 20/15/10/5 hrs if needed
+	//chg_tmr_en;
+
+	//chg_name = "secondary_chg"; //test RT9471 as primary_chg
+};
+
+&extcon_usb {
+	usb-sel-gpios = <&pio 156 0>;
+	pogovbus-supply = <&pogo5v>;
+	pogo-id-gpios = <&pio 6 0>;
+};
+
+#include "mediatek/rt9471_slave_charger.dtsi" //for dual chargers - slave cahrger RT9471
+#include <jagar/cust.dtsi>
+/*End of this file, DO NOT ADD ANYTHING HERE*/

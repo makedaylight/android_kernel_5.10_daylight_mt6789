@@ -1,0 +1,126 @@
+config DRM_MEDIATEK_V2
+	bool "Version 2 of DRM Support for Mediatek SoCs"
+	select FONT_SUPPORT
+	help
+	  Choose this option if you have a phone Mediatek
+	  SoCs. The module will be called mediatek-drm v2
+	  This driver provides kernel mode setting and
+	  buffer management to userspace.
+
+config DRM_MTK_ICOM_DSI_POWER_SEQUENCE
+	bool "Use InnoComm power-on/off sequence for MTK DRMv2 DSI driver"
+	default n
+	help
+	  Select to use InnoComm power-on/off sequence for MTK DRMv2 DSI driver.
+
+config DRM_MTK_ICOM_FORCE_GRAYSCALE
+	bool "Support the grayscale color correction by default"
+	default n
+	depends on DRM_MEDIATEK_V2
+	help
+	  Select to use the grayscale color correction by default for MTK DRMv2 driver.
+
+config DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	bool "Enable the grayscale color correction debug logs"
+	default n
+	depends on DRM_MTK_ICOM_FORCE_GRAYSCALE
+	help
+	  Select to enable the grayscale color correction debug logs.
+
+config DRM_MTK_ICOM_SKIP_FRAME
+	bool "Support the DDIC skip frame CMD"
+	default n
+	depends on DRM_MEDIATEK_V2
+	help
+	  Select to use the DDIC skip frame CMD for MTK DRMv2 driver.
+
+config DRM_MTK_ICOM_LCM_SET_DISPLAY_ON_DELAY
+	bool "Support turn on the screen when plane commit is ready"
+	default n
+	depends on DRM_MEDIATEK_V2
+	help
+	  Select to use turn on the screen when plane commit is ready.
+	  May cause the backlight to be earlier than the screen.
+
+config DRM_MTK_ICOM_DSI_VFP_MODE
+	bool "Support add new iocmd to change preferred mode and max vrefresh mode vfp"
+	default n
+	depends on DRM_MEDIATEK_V2
+	help
+	  Select to add new iocmd to change preferred mode and max vrefresh mode vfp.
+
+config DRM_MTK_ICOM_STOP_VDO_MODE_CMDQ_TIMEOUT_WORKAROUND
+	bool "Support solve cmdq timeout when stop vdo mode with low vrefresh rate"
+	default n
+	depends on DRM_MEDIATEK_V2
+	help
+	  Select to solve cmdq timeout when stop vdo mode with low vrefresh rate.
+
+config DRM_MTK_OVL_BACKGROUND_COLOR_WHITE
+	bool "Support set overlay background color to white"
+	default n
+	depends on DRM_MEDIATEK_V2
+	help
+	  Select to set overlay background color to white.
+
+config DRM_MTK_RDMA_OUTPUT_VALID_FIFO_TH
+	int "Number of rdma output valid fifo threshold"
+	default 0
+	help
+	  Defines the number of rdma output valid fifo threshold to use.
+
+config DRM_MTK_DISABLE_AEE_LAYER
+	bool "Disable AEE Layer for the customer who don't want to produce AEE"
+	help
+	  Disable AEE Layer if you do not want to produce AEE.
+	  Default Mediatek SoCs will produce AEE when exception occurred.
+	  If this value is y, will not produce AEE.
+	  If this value is n, will produce AEE.
+	  If you do not produce AEE, please set it to Y in xxx_defconfig.
+
+config MTK_AAL_SUPPORT
+	bool "Support MTK ambient-light adaptive luma (AAL)"
+	help
+	  Decide whether to support ambient-light adaptive luma and
+	  display visual enhancement.
+	  This feature requires the cowork of AAL user-space algorithm process.
+
+config MTK_DRE30_SUPPORT
+	bool "Support DRE 30"
+	help
+	  Decide whether to support ambient-light adaptive luma and
+	  display visual enhancement ver.3.
+	  This feature requires the cowork of AAL user-space algorithm process.
+
+config MTK_DISP_LOGGER
+	bool "Default enable display logger function"
+	help
+	  Display logger would record display-related event
+	  for debug purpose.
+	  If this value is Y, display driver would
+	  initial display loggger during driver probe
+	  stage, but can still manual disable this function
+	  through debugfs or procfs.
+
+config MTK_RECU_FENCE_LOCK
+	bool "enable fence deadlock workarond for img_gpu"
+	help
+	  For IMG GPU, it will attach to display fence
+	  by callback, and it maybe occur deadlock when fence ref is
+	  reduced to zero in fence signal flow because of linux fence
+	  limitation. So the option will control whether display run
+	  workaround flow.
+
+config MTK_FB_MMDVFS_SUPPORT
+       bool "No HRT hardware is required to support MMDVFS"
+       help
+         If HRT hardware is not in the platform, then support for
+         MMDVFS needs to be added through software.
+
+config MTK_MT6382_BDG
+	tristate "Support Bridge IC 6382"
+	help
+	  This config decide if device with BridgeIC 6382
+	  BridgeIC 6382 can support VESA-1.2 DSC, compressing display framedata
+	  Normal project will disable it first
+	  If you are not sure about this, do not set it to y

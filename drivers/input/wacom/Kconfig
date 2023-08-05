@@ -1,0 +1,7 @@
+config INPUT_WACOM
+	tristate "Wacom EMR I2C driver"
+	depends on I2C
+	help
+	  Say Y here if you have an Wacom EMR using I2C connected to your system.
+
+	  If unsure, say N.
