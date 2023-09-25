@@ -1409,12 +1409,9 @@
 				nvmem-cell-names = "intr_cal", "term_cal";
 				nvmem-cell-masks = <0x3f 0xf00>;
 				mediatek,efuse-intr = <0x26>;
-				mediatek,eye-vrt = <7>;
-				mediatek,eye-term = <7>;
-				mediatek,discth = <0x9>;
-				mediatek,eye-src = <6>;
-				mediatek,rev6 = <1>;
-				mediatek,eye-vrt-host = <7>;
+				mediatek,eye-vrt = <2>;
+				mediatek,eye-vrt-host = <2>;
+				mediatek,discth= <0xb>;
 				mediatek,lpm-parameter = <0x19 0x1e 0x1e>;
 			};
 
@@ -1442,15 +1439,16 @@
 				nvmem-cell-names = "intr_cal", "term_cal";
 				nvmem-cell-masks = <0x1f8000 0x7800000>;
 				mediatek,efuse-intr = <0x26>;
-				mediatek,eye-vrt = <7>;
-				mediatek,eye-term = <7>;
-				mediatek,discth = <0xd>;
-				mediatek,eye-src = <7>;
-				mediatek,rev6 = <3>;
-				mediatek,eye-vrt-host = <7>;
+				mediatek,eye-vrt = <2>;
+				mediatek,eye-vrt-host = <2>;
+				mediatek,discth= <0xb>;
 				mediatek,lpm-parameter = <0x19 0x1e 0x1e>;
 			};
 		};
+
+
+
+
 		u3fpgaphy: usb-phy {
 			compatible = "mediatek,fpga-u3phy";
 			mediatek,ippc = <0x11203e00>;
@@ -1665,7 +1663,7 @@
 				"JOB",
 				"EVENT",
 				"PWR";
-			system-coherency = <0>;
+			#system-coherency = <0>;
 			protected-memory-allocator = <&gpu_protected_memory_allocator>;
 			operating-points-v2 = <&gpu_mali_opp>;
 			#cooling-cells = <2>;
@@ -5940,6 +5938,7 @@
 		min_charger_voltage = <4600000>;
 
 		/* sw jeita */
+		enable_vbat_mon = <1>;
 		/* enable_sw_jeita; */
 		jeita_temp_above_t4_cv = <4240000>;
 		jeita_temp_t3_to_t4_cv = <4240000>;

@@ -158,6 +158,7 @@ enum rtc_irq_sta {
 
 #define EOSC_SOL_1	0x5
 #define EOSC_SOL_2	0x7
+#define EOSC_DISABLE	0x3
 
 
 enum rtc_eosc_cali_td {
@@ -259,6 +260,7 @@ struct mt6397_rtc {
 #ifdef SUPPORT_EOSC_CALI
 	struct regmap_field	*cali[CALI_FILED_MAX];
 	bool			cali_is_supported;
+	bool			disable_eosc_cali;
 #endif
 #ifdef SUPPORT_PWR_OFF_ALARM
 	struct work_struct work;

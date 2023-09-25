@@ -140,9 +140,33 @@ enum Low_Power_Type {
 
 #define ILITEK_TOOL
 
-#define ILITEK_ROTATE_FLAG			0
-#define ILITEK_REVERT_X				0
-#define ILITEK_REVERT_Y				0
+/* ILITEK_PHYSICAL_ORIENTATION (0) is the default orientation of the origin (0,0) in ILITEK FW */
+/* 0/90/180/270 */
+// #define ILITEK_PHYSICAL_ORIENTATION 0
+#ifdef ILITEK_PHYSICAL_ORIENTATION
+  #if (ILITEK_PHYSICAL_ORIENTATION == 90)
+    #define ILITEK_ROTATE_FLAG   1
+    #define ILITEK_REVERT_X      1
+    #define ILITEK_REVERT_Y      0
+  #elif (ILITEK_PHYSICAL_ORIENTATION == 180)
+    #define ILITEK_ROTATE_FLAG   0
+    #define ILITEK_REVERT_X      1
+    #define ILITEK_REVERT_Y      1
+  #elif (ILITEK_PHYSICAL_ORIENTATION == 270)
+    #define ILITEK_ROTATE_FLAG   1
+    #define ILITEK_REVERT_X      0
+    #define ILITEK_REVERT_Y      1
+  #else
+    #define ILITEK_ROTATE_FLAG   0
+    #define ILITEK_REVERT_X      0
+    #define ILITEK_REVERT_Y      0
+  #endif
+#else
+  #define ILITEK_ROTATE_FLAG     0
+  #define ILITEK_REVERT_X        0
+  #define ILITEK_REVERT_Y        0
+#endif
+
 #define TOUCH_SCREEN_X_MAX			1200	//LCD_WIDTH
 #define TOUCH_SCREEN_Y_MAX			1600	//LCD_HEIGHT
 #define ILITEK_RESOLUTION_MAX			16384
@@ -275,6 +299,10 @@ extern int ilitek_resume_allwin(struct i2c_client *client);
 #endif
 
 /* Inocomm define */
+#define INOCO_SET_AFFINITY_HINT_CPU
+#define INOCO_CPU_LATENCY_REQUEST
+//#define INOCO_CPU_LATENCY_REQUEST_DEBUG
+#define INOCO_I2C_READ_BUFF_DMA_SAFE
 #define INOCO_DEFAULT_RESET_DELAY	(600)
 #define INOCO_ILITEK_MDELAY
 #define INOCO_PINCTRL_I2CPULL
@@ -291,4 +319,10 @@ extern int ilitek_resume_allwin(struct i2c_client *client);
 #define INOCO_SKIP_2ND_BYTE // skip comparing the secound byte of the version , 07-xx
 #endif
 #define INOCO_SHOW_FWV
+#if IS_ENABLED(CONFIG_MTPROF)
+#define INOCO_BOOTPROF_LOG
+#ifdef INOCO_BOOTPROF_LOG
+extern void bootprof_log_boot(char *str);
+#endif
+#endif
 /* Inocomm define end*/

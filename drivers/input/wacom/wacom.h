@@ -28,10 +28,17 @@
 #include <linux/device.h>
 #include <linux/ktime.h>
 #include <asm/unaligned.h>
+#include <linux/pm_qos.h>
+#include <linux/cpu.h>
+#include <linux/workqueue.h>
 
 #if IS_ENABLED(CONFIG_DRM_MEDIATEK)
 #include "mtk_disp_notify.h"
 #endif
+
+#define INOCO_SET_AFFINITY_HINT_CPU
+#define INOCO_CPU_LATENCY_REQUEST
+//#define INOCO_CPU_LATENCY_REQUEST_DEBUG
 
 /*Defining flags to ebable/disable a functionality*/
 //#define CALIBRATION
@@ -171,6 +178,31 @@ struct wacom_features {
 };
 
 struct wacom_i2c {
+	u8 data[WACOM_MAX_SIZE]; /* start address is DMA aligned */
+	u16 i2c_read_flags;
+
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+	u32 affinity_hint_cpu;
+#endif
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+#ifndef INOCO_SET_AFFINITY_HINT_CPU
+#error "Must define INOCO_SET_AFFINITY_HINT_CPU for INOCO_CPU_LATENCY_REQUEST"
+#endif
+	struct device *cpu_dev;
+	//struct pm_qos_request pm_qos_request;
+	struct mutex cpu_latency_mutex;
+	s32 cpu_latency_display_on;
+	s32 cpu_latency_touched;
+
+	u32 cpu_latency_check_time; /* jiffies */
+	struct delayed_work cpu_latency_check_work;
+	u64 last_touched_time; /* jiffies_64 */
+#endif
+	struct pm_qos_request pm_qos_request;
+	s32 cpu_latency_us;
+	bool use_local_cpu_latency;
+
 	struct i2c_client *client;
 	struct input_dev *input;
 	struct wacom_features *features;
@@ -192,7 +224,7 @@ struct wacom_i2c {
 	bool vdd3v3_status;
 
 	int tool;
-	u8 data[WACOM_MAX_SIZE];
+	// u8 data[WACOM_MAX_SIZE]; /* start address is not DMA aligned */
 	u8 cmd;
 	bool prox;
 	int post_power_delay_ms;

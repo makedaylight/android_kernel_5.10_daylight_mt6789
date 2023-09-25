@@ -26,6 +26,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/pinctrl/devinfo.h>
+#include <linux/mutex.h>
 
 #define I2C_RS_TRANSFER			(1 << 4)
 #define I2C_ARB_LOST			(1 << 3)
@@ -89,6 +90,7 @@
 #define I2C_CONTROL_DIR_CHANGE          (0x1 << 4)
 #define I2C_CONTROL_ACKERR_DET_EN       (0x1 << 5)
 #define I2C_CONTROL_TRANSFER_LEN_CHANGE (0x1 << 6)
+#define I2C_CONTROL_IRQ_SEL		(0x1 << 7)
 #define I2C_CONTROL_DMAACK_EN           (0x1 << 8)
 #define I2C_CONTROL_ASYNC_MODE          (0x1 << 9)
 #define I2C_CONTROL_WRAPPER             (0x1 << 0)
@@ -275,6 +277,7 @@ struct mtk_i2c_ac_timing {
 
 struct mtk_i2c {
 	struct i2c_adapter adap;	/* i2c host adapter */
+	struct mutex bus_mutex;
 	struct device *dev;
 	struct completion msg_complete;
 
@@ -305,6 +308,7 @@ struct mtk_i2c {
 	unsigned char auto_restart;
 	bool ignore_restart_irq;
 	bool clk_div_ctrl;
+	bool ctrl_irq_sel;
 	struct mtk_i2c_ac_timing ac_timing;
 	const struct mtk_i2c_compatible *dev_comp;
 };
@@ -785,6 +789,9 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 		      I2C_CONTROL_CLK_EXT_EN | I2C_CONTROL_DMA_EN;
 	if (i2c->dev_comp->dma_sync)
 		control_reg |= I2C_CONTROL_DMAACK_EN | I2C_CONTROL_ASYNC_MODE;
+
+	if (i2c->ctrl_irq_sel == true)
+		control_reg |= I2C_CONTROL_IRQ_SEL;
 
 	mtk_i2c_writew(i2c, control_reg, OFFSET_CONTROL);
 	mtk_i2c_writew(i2c, I2C_DELAY_LEN, OFFSET_DELAY_LEN);
@@ -1469,7 +1476,7 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 
 	if (ret == 0) {
 		u16 start_reg = mtk_i2c_readw(i2c, OFFSET_START);
-		dev_dbg(i2c->dev, "i2c%u addr: 0x%x, transfer timeout (stat=0x%x)\n",
+		dev_info(i2c->dev, "i2c%u addr: 0x%x, transfer timeout (stat=0x%x)\n",
 			i2c->adap.nr, msgs->addr, i2c->irq_stat);
 		mtk_i2c_dump_reg(i2c);
 		if (i2c->ch_offset_i2c) {
@@ -1481,20 +1488,20 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 		mtk_i2c_init_hw(i2c);
 		if ((i2c->ch_offset_i2c) && (start_reg & I2C_RESUME_ARBIT)) {
 			mtk_i2c_writew_shadow(i2c, I2C_RESUME_ARBIT, OFFSET_START);
-			dev_dbg(i2c->dev, "bus channel transferred\n");
+			dev_info(i2c->dev, "bus channel transferred\n");
 		}
 
 		return -ETIMEDOUT;
 	}
 
 	if (i2c->irq_stat & (I2C_HS_NACKERR | I2C_ACKERR)) {
-		dev_dbg(i2c->dev, "i2c%u addr: 0x%x, %s transfer ACK error (stat=0x%x)\n",
+		dev_info(i2c->dev, "i2c%u addr: 0x%x, %s transfer ACK error (stat=0x%x)\n",
 			i2c->adap.nr, msgs->addr, (addr_reg & 1) ? "read" : "write",
 			i2c->irq_stat);
 		mtk_i2c_init_hw(i2c);
 		if (i2c->ch_offset_i2c) {
 			mtk_i2c_writew_shadow(i2c, I2C_RESUME_ARBIT, OFFSET_START);
-			dev_dbg(i2c->dev, "bus channel transferred\n");
+			dev_info(i2c->dev, "bus channel transferred\n");
 		}
 		return -ENXIO;
 	}
@@ -1667,6 +1674,32 @@ static const struct i2c_algorithm mtk_i2c_algorithm = {
 	.functionality = mtk_i2c_functionality,
 };
 
+static inline struct mtk_i2c *to_mtk_i2c(struct i2c_adapter *i2c)
+{
+	return container_of(i2c, struct mtk_i2c, adap);
+}
+
+static void mtk_i2c_lock_bus(struct i2c_adapter *i2c, unsigned int flags)
+{
+	mutex_lock(&to_mtk_i2c(i2c)->bus_mutex);
+}
+
+static int mtk_i2c_trylock_bus(struct i2c_adapter *i2c, unsigned int flags)
+{
+	return mutex_trylock(&to_mtk_i2c(i2c)->bus_mutex);
+}
+
+static void mtk_i2c_unlock_bus(struct i2c_adapter *i2c, unsigned int flags)
+{
+	mutex_unlock(&to_mtk_i2c(i2c)->bus_mutex);
+}
+
+static const struct i2c_lock_operations mtk_i2c_lock_ops = {
+	.lock_bus = mtk_i2c_lock_bus,
+	.trylock_bus = mtk_i2c_trylock_bus,
+	.unlock_bus = mtk_i2c_unlock_bus,
+};
+
 static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 {
 	int ret;
@@ -1686,8 +1719,12 @@ static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 	of_property_read_u32(np, "ch_offset_dma", &i2c->ch_offset_dma);
 	of_property_read_u32(np, "aed", &i2c->aed);
 	i2c->clk_div_ctrl = of_property_read_bool(np, "mediatek,clk_div_ctrl");
-	dev_dbg(i2c->dev, "clk_src=%d,ch_offset_i2c=0x%x, ch_offset_dma=0x%x, aed=0x%x, clk_div_ctrl=%d\n",
-			i2c->clk_src_in_hz, i2c->ch_offset_i2c, i2c->ch_offset_dma, i2c->aed, i2c->clk_div_ctrl);
+	i2c->ctrl_irq_sel = of_property_read_bool(np, "mediatek,control_irq_sel");
+	dev_info(i2c->dev, "i2c dts parameter parse:\n"
+		"clk_src=%d,ch_offset_i2c=0x%x, ch_offset_dma=0x%x,\n"
+		"aed=0x%x, clk_div_ctrl=%d, control_irq_sel=%d\n",
+		i2c->clk_src_in_hz, i2c->ch_offset_i2c, i2c->ch_offset_dma,
+		i2c->aed, i2c->clk_div_ctrl, i2c->ctrl_irq_sel);
 	i2c->have_pmic = of_property_read_bool(np, "mediatek,have-pmic");
 	i2c->use_push_pull =
 		of_property_read_bool(np, "mediatek,use-push-pull");
@@ -1738,6 +1775,12 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	/* TBD: -EAGAIN for the retry of I2C arbitration lost */
 	i2c->adap.retries = 1;
 	i2c->adap.nr = of_alias_get_id(pdev->dev.of_node, "i2c");
+
+	if (of_property_read_bool(pdev->dev.of_node, "mutex-lock-ops")) {
+		/* i2c_adapter_lock_ops */
+		mutex_init(&i2c->bus_mutex);
+		i2c->adap.lock_ops = &mtk_i2c_lock_ops;
+	}
 
 	ret = mtk_i2c_parse_dt(pdev->dev.of_node, i2c);
 	if (ret)
@@ -1830,12 +1873,22 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	mtk_i2c_init_hw(i2c);
 	mtk_i2c_clock_disable(i2c);
 
+	if (pdev->dev.of_node) {
+		u32 cpu = 0;
+		if (of_property_read_u32(pdev->dev.of_node, "affinity-hint-cpu", &cpu) == 0) {
+			ret = irq_set_affinity_hint(irq, get_cpu_mask(cpu));
+			if (ret)
+				dev_err(&pdev->dev, "set irq affinity hint err %d\n", ret);
+		}
+	}
+
 	ret = devm_request_irq(&pdev->dev, irq, mtk_i2c_irq,
 			       IRQF_NO_SUSPEND | IRQF_TRIGGER_NONE,
 			       I2C_DRV_NAME, i2c);
 	if (ret < 0) {
 		dev_err(&pdev->dev,
 			"Request I2C IRQ %d fail\n", irq);
+		irq_set_affinity_hint(irq, NULL);
 		return ret;
 	}
 
@@ -1852,6 +1905,11 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 static int mtk_i2c_remove(struct platform_device *pdev)
 {
 	struct mtk_i2c *i2c = platform_get_drvdata(pdev);
+	int irq;
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq >= 0)
+		irq_set_affinity_hint(irq, NULL);
 
 	i2c_del_adapter(&i2c->adap);
 

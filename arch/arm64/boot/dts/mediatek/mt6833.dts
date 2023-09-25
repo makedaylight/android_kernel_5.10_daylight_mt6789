@@ -2307,9 +2307,9 @@
 			"ufs-unipro-clk",
 			"ufs-mp-clk",
 			"ufs-crypto-clk",
-			"ufs-vendor-crypto-clk-mux",
-			"ufs-vendor-crypto-normal-parent-clk",
-			"ufs-vendor-crypto-perf-parent-clk";
+			"crypt_mux",
+			"crypt_lp",
+			"crypt_perf";
 		freq-table-hz =
 			<0 0>,
 			<0 0>,
@@ -2963,6 +2963,8 @@
 #endif
 		_vgpu-supply = <&mt6359p_vproc1_reg>;
 		_vsram_gpu-supply = <&mt6359p_vsram_md_reg>;
+		nvmem-cells = <&efuse_segment>;
+		nvmem-cell-names = "efuse_segment_cell";
 		fhctl-supply = <&fhctl>;
 		gpufreq_wrapper-supply = <&gpufreq_wrapper>;
 	};
@@ -5696,6 +5698,7 @@
 		clock-names = "sys_clk",
 			"ref_clk",
 			"src_clk";
+		pericfg= <&pericfg_clk>;
 		phys = <&u2port0 PHY_TYPE_USB2>;
 		mode = <2>;
 		multipoint = <1>;
@@ -5704,6 +5707,8 @@
 		dr_mode = "otg";
 		usb-role-switch;
 		cdp-block;
+		wakeup-source;
+		infracg = <&infracfg_ao_clk>;
 		port {
 			musb_drd_switch: endpoint@0 {
 				remote-endpoint = <&usb_role>;
@@ -5722,6 +5727,7 @@
 			reg = <0 0x11e40000 0 0x700>;
 			clocks = <&clk26m>;
 			clock-names = "ref";
+			mediatek,usb-special-phy-settings;
 			#phy-cells = <1>;
 			status = "okay";
 		};
@@ -5737,6 +5743,7 @@
 		interconnects = <&dvfsrc MT6873_MASTER_DBGIF &dvfsrc MT6873_SLAVE_DDR_EMI>;
 		interconnect-names = "icc-bw";
 		required-opps = <&dvfsrc_freq_opp0>;
+		usb-audio;
 		small-core = <1300000>;
 	};
 
@@ -6133,6 +6140,11 @@
 
 	gps: gps@18c00000 {
 		compatible = "mediatek,gps";
+		emi-region = <29>;
+		emi-offset = <0x400000>;
+		emi-size = <0xfffff>;
+		emi-domain-ap = <0>;
+		emi-domain-conn = <2>;
 	};
 
 	mtk_lpm: mtk_lpm {

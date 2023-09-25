@@ -13,6 +13,33 @@
 
 #include "wacom.h"
 
+/* WACOM_PHYSICAL_ORIENTATION (0) is the default orientation of the origin (0,0) in WACOM FW */
+/* 0/90/180/270 */
+// #define WACOM_PHYSICAL_ORIENTATION 0
+#ifdef WACOM_PHYSICAL_ORIENTATION
+  #if (WACOM_PHYSICAL_ORIENTATION == 90)
+    #define WACOM_SWAP_XY       1
+    #define WACOM_INVERT_X      1
+    #define WACOM_INVERT_Y      0
+  #elif (WACOM_PHYSICAL_ORIENTATION == 180)
+    #define WACOM_SWAP_XY       0
+    #define WACOM_INVERT_X      1
+    #define WACOM_INVERT_Y      1
+  #elif (WACOM_PHYSICAL_ORIENTATION == 270)
+    #define WACOM_SWAP_XY       1
+    #define WACOM_INVERT_X      0
+    #define WACOM_INVERT_Y      1
+  #else
+    #define WACOM_SWAP_XY       0
+    #define WACOM_INVERT_X      0
+    #define WACOM_INVERT_Y      0
+  #endif
+#else
+  #define WACOM_SWAP_XY         0
+  #define WACOM_INVERT_X        0
+  #define WACOM_INVERT_Y        0
+#endif
+
 /* Resolutions */
 #define XY_RESOLUTION       100   /* Distance : SI Linear Unit with exponent -3 */
 #define DIST_RESOLUTION     10    /* Distance : SI Linear Unit with exponent -2. This covers 'Z' resolution too */
@@ -134,20 +161,141 @@ static void set_offset(int *x, int *y, int x_max, int y_max)
 }
 #endif
 
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+static inline void wacom_cpu_latency_request_nolock(struct wacom_i2c *wac_i2c, s32 new_value)
+{
+	dev_pm_qos_update_request(wac_i2c->cpu_dev->power.qos->resume_latency_req,
+			new_value);
+#if 0
+	cpu_latency_qos_update_request(&wac_i2c->pm_qos_request,
+			new_value != PM_QOS_RESUME_LATENCY_NO_CONSTRAINT ?
+				new_value : PM_QOS_DEFAULT_VALUE);
+#endif
+}
+
+static void wacom_cpu_latency_update_nolock(struct wacom_i2c *wac_i2c)
+{
+	if (!wac_i2c->cpu_dev)
+		return;
+
+	if (wac_i2c->fb_blank_powerdown) {
+		wac_i2c->last_touched_time = 0;
+		cancel_delayed_work(&wac_i2c->cpu_latency_check_work);
+
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+		dev_info(&wac_i2c->client->dev, "wacom_cpu_latency_update: latency released (was suspend)\n");
+#endif
+		wacom_cpu_latency_request_nolock(wac_i2c, PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		//cpu_latency_qos_update_request(&wac_i2c->pm_qos_request, PM_QOS_DEFAULT_VALUE);
+	} else {
+		wac_i2c->last_touched_time = 0;
+		cancel_delayed_work(&wac_i2c->cpu_latency_check_work);
+
+		if (wac_i2c->cpu_latency_display_on > 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			dev_info(&wac_i2c->client->dev, "wacom_cpu_latency_update: latency display %d\n", wac_i2c->cpu_latency_display_on);
+#endif
+			wacom_cpu_latency_request_nolock(wac_i2c, wac_i2c->cpu_latency_display_on);
+		} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			dev_info(&wac_i2c->client->dev, "wacom_cpu_latency_update: latency released\n");
+#endif
+			wacom_cpu_latency_request_nolock(wac_i2c, PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		}
+	}
+}
+
+static void __maybe_unused wacom_cpu_latency_check_work(struct work_struct *work)
+{
+	struct wacom_i2c *wac_i2c = container_of(to_delayed_work(work),
+						struct wacom_i2c, cpu_latency_check_work);
+	bool re_queue = false;
+
+	mutex_lock(&wac_i2c->cpu_latency_mutex);
+
+	if (wac_i2c->last_touched_time && wac_i2c->cpu_latency_check_time) {
+		u64 next_check = wac_i2c->last_touched_time + wac_i2c->cpu_latency_check_time;
+		u64 now = get_jiffies_64();
+
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+		dev_info(&wac_i2c->client->dev, "wacom_cpu_latency_check: time %u; last_touched_time %llu; next_check %llu; now %llu\n",
+				wac_i2c->cpu_latency_check_time, wac_i2c->last_touched_time, next_check, now);
+#endif
+		if (time_after_eq64(now, next_check)) {
+			if (wac_i2c->cpu_latency_display_on > 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				dev_info(&wac_i2c->client->dev, "wacom_cpu_latency_check: latency display %d\n", wac_i2c->cpu_latency_display_on);
+#endif
+				wacom_cpu_latency_request_nolock(wac_i2c, wac_i2c->cpu_latency_display_on);
+			} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				dev_info(&wac_i2c->client->dev, "wacom_cpu_latency_check: latency released\n");
+#endif
+				wacom_cpu_latency_request_nolock(wac_i2c, PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+			}
+		} else {
+			re_queue = true;
+		}
+	}
+
+	mutex_unlock(&wac_i2c->cpu_latency_mutex);
+
+	if (re_queue) {
+		if (schedule_delayed_work_on(wac_i2c->affinity_hint_cpu,
+				&wac_i2c->cpu_latency_check_work, wac_i2c->cpu_latency_check_time)) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			dev_info(&wac_i2c->client->dev, "wacom_cpu_latency_check: queue work\n");
+#endif
+		} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			dev_info(&wac_i2c->client->dev, "wacom_cpu_latency_check: work was queued\n");
+#endif
+		}
+	}
+}
+#endif
+
 static irqreturn_t wacom_i2c_irq(int irq, void *dev_id)
 {
 	struct wacom_i2c *wac_i2c = dev_id;
 	struct input_dev *input = wac_i2c->input;
 	u8 *data = wac_i2c->data;
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	bool use_cpu_latency = false;
+#endif
 	unsigned int x, y, pressure;
 	int tilt_x, tilt_y;
 	unsigned char tsw, f1, f2, ers;
 	int data_len = wac_i2c->features->hid_desc.wMaxInputLength;
 	int error;
 	int id = 0;
+	struct i2c_msg msg = {
+		.addr = wac_i2c->client->addr,
+		.flags = wac_i2c->i2c_read_flags,
+		.len = data_len,
+		.buf = data,
+	};
 
 	dev_dbg(&wac_i2c->client->dev, "+%s()\n", __func__);
 
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	mutex_lock(&wac_i2c->cpu_latency_mutex);
+
+	if (wac_i2c->cpu_latency_touched > 0 &&
+			(wac_i2c->cpu_latency_display_on == 0 || wac_i2c->cpu_latency_touched < wac_i2c->cpu_latency_display_on)) {
+		use_cpu_latency = true;
+
+		if (wac_i2c->cpu_latency_touched < dev_pm_qos_requested_resume_latency(wac_i2c->cpu_dev)) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			dev_info(&wac_i2c->client->dev, "wacom_i2c_isr: latency touched %d\n", wac_i2c->cpu_latency_touched);
+#endif
+			wacom_cpu_latency_request_nolock(wac_i2c, wac_i2c->cpu_latency_touched);
+		}
+	}
+#endif
+
+#if 0
 	error = i2c_master_recv(wac_i2c->client,
 				data, data_len);
 
@@ -156,6 +304,15 @@ static irqreturn_t wacom_i2c_irq(int irq, void *dev_id)
 		dev_dbg(&wac_i2c->client->dev, "data[%d]: %*ph\n", (data[1] << 8) | data[0], (data[1] << 8) | data[0], data);
 		goto out;
 	}
+#else
+	error = i2c_transfer(wac_i2c->client->adapter, &msg, 1);
+
+	if (error != 1) {
+		dev_dbg(&wac_i2c->client->dev, "%s(): data_len != %d\n", __func__, error);
+		dev_dbg(&wac_i2c->client->dev, "data[%d]: %*ph\n", (data[1] << 8) | data[0], (data[1] << 8) | data[0], data);
+		goto out;
+	}
+#endif
 
 #ifdef DEBUG_V
 	dev_dbg(&wac_i2c->client->dev, "data[%d]: %*ph\n", (data[1] << 8) | data[0], (data[1] << 8) | data[0], data);
@@ -168,6 +325,12 @@ static irqreturn_t wacom_i2c_irq(int irq, void *dev_id)
 	f2 = data[3] & 0x10;
 	x = le16_to_cpup((__le16 *)&data[4]);
 	y = le16_to_cpup((__le16 *)&data[6]);
+#if defined(WACOM_INVERT_X) && (WACOM_INVERT_X)
+	x = wac_i2c->features->x_max - x /*+ x_min*/;
+#endif
+#if defined(WACOM_INVERT_Y) && (WACOM_INVERT_Y)
+	y = wac_i2c->features->y_max - y /*+ x_min*/;
+#endif
 	pressure = le16_to_cpup((__le16 *)&data[8]);
 
 	//set_offset(&x, &y, wac_i2c->features.x_max, wac_i2c->features.y_max);
@@ -190,8 +353,13 @@ static irqreturn_t wacom_i2c_irq(int irq, void *dev_id)
 	input_report_key(input, wac_i2c->tool, wac_i2c->prox);
 	input_report_key(input, BTN_STYLUS, f1);
 	input_report_key(input, BTN_STYLUS2, f2);
+#if defined(WACOM_SWAP_XY) && (WACOM_SWAP_XY)
+	input_report_abs(input, ABS_X, y);
+	input_report_abs(input, ABS_Y, x);
+#else
 	input_report_abs(input, ABS_X, x);
 	input_report_abs(input, ABS_Y, y);
+#endif
 	input_report_abs(input, ABS_PRESSURE, pressure);
 	input_report_abs(input, ABS_MISC, id);
 #ifdef ENABLE_SERIAL
@@ -213,6 +381,38 @@ static irqreturn_t wacom_i2c_irq(int irq, void *dev_id)
 	input_sync(input);
 
 out:
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	if (use_cpu_latency) {
+		if (wac_i2c->cpu_latency_check_time) {
+			wac_i2c->last_touched_time = get_jiffies_64();
+			if (!delayed_work_pending(&wac_i2c->cpu_latency_check_work)) {
+				if (schedule_delayed_work_on(wac_i2c->affinity_hint_cpu,
+						&wac_i2c->cpu_latency_check_work, wac_i2c->cpu_latency_check_time)) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+					dev_info(&wac_i2c->client->dev, "wacom_i2c_isr: queue work\n");
+#endif
+				} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+					dev_info(&wac_i2c->client->dev, "wacom_i2c_isr: work was queued\n");
+#endif
+				}
+			}
+		} else if (wac_i2c->cpu_latency_display_on > 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			dev_info(&wac_i2c->client->dev, "wacom_i2c_isr: latency display %d\n", wac_i2c->cpu_latency_display_on);
+#endif
+			wacom_cpu_latency_request_nolock(wac_i2c, wac_i2c->cpu_latency_display_on);
+		} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			dev_info(&wac_i2c->client->dev, "wacom_i2c_isr: latency released\n");
+#endif
+			wacom_cpu_latency_request_nolock(wac_i2c, PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		}
+	}
+
+	mutex_unlock(&wac_i2c->cpu_latency_mutex);
+#endif
+
 	return IRQ_HANDLED;
 }
 
@@ -387,6 +587,24 @@ static int disp_notifier_callback(struct notifier_block *self, unsigned long eve
 			wacom_pinctrl_select(wac_i2c, false);
 			gpiod_set_value(wac_i2c->reset_gpiod, 1); /* reset */
 			wacom_regulator_control(wac_i2c, false);
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+			if (wac_i2c->cpu_latency_touched > 0 || wac_i2c->cpu_latency_display_on > 0) {
+				wac_i2c->last_touched_time = 0; /* clear out of mutex */
+
+				mutex_lock(&wac_i2c->cpu_latency_mutex);
+				if (wac_i2c->cpu_latency_check_time) {
+					wac_i2c->last_touched_time = 0; /* clear again in mutex */
+					cancel_delayed_work(&wac_i2c->cpu_latency_check_work); /* no sync in mutex */
+				}
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				dev_info(&wac_i2c->client->dev, "wacom_suspend: latency released\n");
+#endif
+				wacom_cpu_latency_request_nolock(wac_i2c, PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+				//cpu_latency_qos_update_request(&ts->pm_qos_request, PM_QOS_DEFAULT_VALUE);
+				mutex_unlock(&wac_i2c->cpu_latency_mutex);
+			}
+#endif
 		} else if (*ev_data == MTK_DISP_BLANK_UNBLANK && wac_i2c->fb_blank_powerdown) {
 			dev_dbg(&wac_i2c->client->dev, "%s(): notify resume\n", __func__);
 			gpiod_set_value(wac_i2c->reset_gpiod, 1); /* reset */
@@ -409,6 +627,18 @@ static int disp_notifier_callback(struct notifier_block *self, unsigned long eve
 				wacom_delay(delay_ms_kt);
 			}
 		}
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+		if (wac_i2c->cpu_latency_display_on > 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			dev_info(&wac_i2c->client->dev, "wacom_resume: latency display %d\n", wac_i2c->cpu_latency_display_on);
+#endif
+			mutex_lock(&wac_i2c->cpu_latency_mutex);
+			wacom_cpu_latency_request_nolock(wac_i2c, wac_i2c->cpu_latency_display_on);
+			mutex_unlock(&wac_i2c->cpu_latency_mutex);
+		}
+#endif
+
 		enable_irq(wac_i2c->client->irq);
 		wac_i2c->fb_blank_powerdown = false;
 	}
@@ -454,8 +684,172 @@ static ssize_t fwversion_show(struct device *dev,
 
 static DEVICE_ATTR_RO(fwversion);
 
+#ifdef INOCO_CPU_LATENCY_REQUEST
+static ssize_t cpu_latency_check_time_show(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	struct wacom_i2c *wac_i2c = i2c_get_clientdata(to_i2c_client(dev));
+
+	if (wac_i2c->cpu_dev == NULL)
+		return sysfs_emit(buf, "unsupported\n");
+
+	return sysfs_emit(buf, "%u\n", jiffies_to_msecs(wac_i2c->cpu_latency_check_time));
+}
+
+/* refer to pm_qos_resume_latency_us_store() */
+static ssize_t cpu_latency_check_time_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t n)
+{
+	struct wacom_i2c *wac_i2c = i2c_get_clientdata(to_i2c_client(dev));
+	s32 value = 0;
+
+	if (wac_i2c->cpu_dev == NULL)
+		return -EINVAL;
+
+	if (kstrtos32(buf, 0, &value) || value < 0)
+		return -EINVAL;
+
+	dev_info(&wac_i2c->client->dev, "new cpu_latency_check_time: %d msec(s)\n", value);
+
+	mutex_lock(&wac_i2c->cpu_latency_mutex);
+	if (value == 0)
+		wac_i2c->cpu_latency_check_time = 0;
+	else
+		wac_i2c->cpu_latency_check_time = msecs_to_jiffies(value);
+	wacom_cpu_latency_update_nolock(wac_i2c);
+	mutex_unlock(&wac_i2c->cpu_latency_mutex);
+
+	return n;
+}
+
+static DEVICE_ATTR_RW(cpu_latency_check_time);
+
+/* refer to pm_qos_resume_latency_us_show() */
+static ssize_t cpu_latency_display_on_show(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	struct wacom_i2c *wac_i2c = i2c_get_clientdata(to_i2c_client(dev));
+	s32 value = wac_i2c->cpu_latency_display_on;
+
+	if (wac_i2c->cpu_dev == NULL)
+		return sysfs_emit(buf, "unsupported\n");
+
+	if (value == 0)
+		return sysfs_emit(buf, "n/a\n");
+	if (value == PM_QOS_RESUME_LATENCY_NO_CONSTRAINT)
+		value = 0;
+
+	return sysfs_emit(buf, "%d\n", value);
+}
+
+/* refer to pm_qos_resume_latency_us_store() */
+static ssize_t cpu_latency_display_on_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t n)
+{
+	struct wacom_i2c *wac_i2c = i2c_get_clientdata(to_i2c_client(dev));
+	s32 value;
+
+	if (wac_i2c->cpu_dev == NULL)
+		return -EINVAL;
+
+	if (!kstrtos32(buf, 0, &value)) {
+		/*
+		 * Prevent users from writing negative or "no constraint" values
+		 * directly.
+		 */
+		if (value < 0 || value == PM_QOS_RESUME_LATENCY_NO_CONSTRAINT)
+			return -EINVAL;
+
+		if (value == 0)
+			value = PM_QOS_RESUME_LATENCY_NO_CONSTRAINT;
+	} else if (sysfs_streq(buf, "n/a")) {
+		value = 0;
+	} else {
+		return -EINVAL;
+	}
+
+	dev_info(&wac_i2c->client->dev, "new cpu_latency_display_on: %d usec(s)\n", value);
+
+	mutex_lock(&wac_i2c->cpu_latency_mutex);
+	wac_i2c->cpu_latency_display_on = value;
+	wacom_cpu_latency_update_nolock(wac_i2c);
+	mutex_unlock(&wac_i2c->cpu_latency_mutex);
+
+	return n;
+}
+
+static DEVICE_ATTR_RW(cpu_latency_display_on);
+
+/* refer to pm_qos_resume_latency_us_show() */
+static ssize_t cpu_latency_touched_show(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	struct wacom_i2c *wac_i2c = i2c_get_clientdata(to_i2c_client(dev));
+	s32 value = wac_i2c->cpu_latency_touched;
+
+	if (wac_i2c->cpu_dev == NULL)
+		return sysfs_emit(buf, "unsupported\n");
+
+	if (value == 0)
+		return sysfs_emit(buf, "n/a\n");
+	if (value == PM_QOS_RESUME_LATENCY_NO_CONSTRAINT)
+		value = 0;
+
+	return sysfs_emit(buf, "%d\n", value);
+}
+
+/* refer to pm_qos_resume_latency_us_store() */
+static ssize_t cpu_latency_touched_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t n)
+{
+	struct wacom_i2c *wac_i2c = i2c_get_clientdata(to_i2c_client(dev));
+	s32 value;
+
+	if (wac_i2c->cpu_dev == NULL)
+		return -EINVAL;
+
+	if (!kstrtos32(buf, 0, &value)) {
+		/*
+		 * Prevent users from writing negative or "no constraint" values
+		 * directly.
+		 */
+		if (value < 0 || value == PM_QOS_RESUME_LATENCY_NO_CONSTRAINT)
+			return -EINVAL;
+
+		if (value == 0)
+			value = PM_QOS_RESUME_LATENCY_NO_CONSTRAINT;
+	} else if (sysfs_streq(buf, "n/a")) {
+		value = 0;
+	} else {
+		return -EINVAL;
+	}
+
+	dev_info(&wac_i2c->client->dev, "new cpu_latency_touched: %d usec(s)\n", value);
+
+	mutex_lock(&wac_i2c->cpu_latency_mutex);
+	wac_i2c->cpu_latency_touched = value;
+	wacom_cpu_latency_update_nolock(wac_i2c);
+	mutex_unlock(&wac_i2c->cpu_latency_mutex);
+
+	return n;
+}
+
+static DEVICE_ATTR_RW(cpu_latency_touched);
+#endif
+
 static struct attribute *fw_attributes[] = {
 	&dev_attr_fwversion.attr,
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	&dev_attr_cpu_latency_check_time.attr,
+	&dev_attr_cpu_latency_display_on.attr,
+	&dev_attr_cpu_latency_touched.attr,
+#endif
 	NULL,
 };
 
@@ -508,6 +902,12 @@ static int wacom_i2c_probe(struct i2c_client *client,
 
 	wac_i2c->client = client;
 	wac_i2c->input = input;
+
+	wac_i2c->i2c_read_flags = I2C_M_RD;
+	if (IS_ALIGNED((u64)wac_i2c->data, ARCH_KMALLOC_MINALIGN)) {
+		// dev_info(&client->dev, "data is DMA aligned\n");
+		wac_i2c->i2c_read_flags |= I2C_M_DMA_SAFE;
+	}
 
 	error = wacom_fwnode_probe(wac_i2c);
 	if (error)
@@ -579,8 +979,15 @@ static int wacom_i2c_probe(struct i2c_client *client,
 	       __func__, wac_i2c->features->x_max, wac_i2c->features->y_max);
 #endif
 
+#if defined(WACOM_SWAP_XY) && (WACOM_SWAP_XY)
+	input_set_abs_params(input, ABS_X, 0, wac_i2c->features->y_max, 0, 0);
+	input_set_abs_params(input, ABS_Y, 0, wac_i2c->features->x_max, 0, 0);
+	dev_dbg(&client->dev, "swapped: new input params: x_max:%d, y_max:%d\n",
+		wac_i2c->features->y_max, wac_i2c->features->x_max);
+#else
 	input_set_abs_params(input, ABS_X, 0, wac_i2c->features->x_max, 0, 0);
 	input_set_abs_params(input, ABS_Y, 0, wac_i2c->features->y_max, 0, 0);
+#endif
 	input_abs_set_res(input, ABS_X, XY_RESOLUTION);
 	input_abs_set_res(input, ABS_Y, XY_RESOLUTION);
 
@@ -610,6 +1017,72 @@ static int wacom_i2c_probe(struct i2c_client *client,
 
 	input_set_drvdata(input, wac_i2c);
 
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+	wac_i2c->affinity_hint_cpu = U32_MAX;
+#endif
+
+	if (client->dev.of_node) {
+#if defined(INOCO_SET_AFFINITY_HINT_CPU) || defined(INOCO_CPU_LATENCY_REQUEST)
+		u32 value = 0;
+#endif
+
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+		if (of_property_read_u32(client->dev.of_node, "affinity-hint-cpu", &value) == 0) {
+			error = irq_set_affinity_hint(client->irq, get_cpu_mask(value));
+			if (error)
+				dev_err(&client->dev, "set irq affinity hint err %d\n", error);
+			else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				dev_info(&client->dev, "set irq affinity hint: cpu %u\n", value);
+#else
+				dev_dbg(&client->dev, "set irq affinity hint: cpu %u\n", value);
+#endif
+				wac_i2c->affinity_hint_cpu = value;
+			}
+		}
+#endif
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+		if (wac_i2c->affinity_hint_cpu < CONFIG_NR_CPUS &&
+			(wac_i2c->cpu_dev = get_cpu_device(wac_i2c->affinity_hint_cpu)) != NULL) {
+			value = 0;
+			if (of_property_read_u32(client->dev.of_node, "cpu-latency-display-on", &value) == 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				dev_info(&client->dev, "cpu_latency_display_on: %u\n", value);
+#endif
+				wac_i2c->cpu_latency_display_on = value;
+			}
+
+			value = 0;
+			if (of_property_read_u32(client->dev.of_node, "cpu-latency-touched", &value) == 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				dev_info(&client->dev, "cpu_latency_touched: %u\n", value);
+#endif
+				wac_i2c->cpu_latency_touched = value;
+			}
+
+			value = 0;
+			if (of_property_read_u32(client->dev.of_node, "cpu-latency-check-time", &value) == 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				dev_info(&client->dev, "cpu_latency_check_time: %u ms\n", value);
+#endif
+				if (value >= 1000) { /* msecs */
+					wac_i2c->cpu_latency_check_time = msecs_to_jiffies(value); /* jiffies */
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+					dev_info(&client->dev, "cpu_latency_check_time: %u jiffies\n", wac_i2c->cpu_latency_check_time);
+#endif
+				}
+			}
+			INIT_DELAYED_WORK(&wac_i2c->cpu_latency_check_work, wacom_cpu_latency_check_work);
+		}
+#endif
+	}
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	//cpu_latency_qos_add_request(&wac_i2c->pm_qos_request, PM_QOS_DEFAULT_VALUE);
+	mutex_init(&wac_i2c->cpu_latency_mutex);
+#endif
+
 	/* Disable the IRQ, we'll enable it in wac_i2c_open() */
 	irq_set_status_flags(client->irq, IRQ_NOAUTOEN);
 	error = devm_request_threaded_irq(&client->dev, client->irq, NULL, wacom_i2c_irq,
@@ -618,14 +1091,14 @@ static int wacom_i2c_probe(struct i2c_client *client,
 	if (error) {
 		dev_err(&client->dev,
 			"Failed to request IRQ, error: %d\n", error);
-		goto  err_disable_gpios;
+		goto err_clear_irq_affinity_hint;
 	}
 
 	error = input_register_device(wac_i2c->input);
 	if (error) {
 		dev_err(&client->dev,
 			"Failed to register input device, error: %d\n", error);
-		goto err_disable_gpios;
+		goto err_clear_irq_affinity_hint;
 	}
 
 	i2c_set_clientdata(client, wac_i2c);
@@ -633,14 +1106,40 @@ static int wacom_i2c_probe(struct i2c_client *client,
 #if IS_ENABLED(CONFIG_DRM_MEDIATEK)
 	error = register_notifier(wac_i2c);
 	if (error)
-		goto err_disable_gpios;
+		goto err_unregister_input;
 #endif
 
 	error = sysfs_create_group(&client->dev.kobj, &fw_attr_group);
 	if (error)
 		dev_err(&client->dev, "sysfs create failed(%d)", error);
 
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	if (wac_i2c->cpu_latency_display_on > 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+		dev_info(&client->dev, "wacom_i2c_probe: latency display %d\n", wac_i2c->cpu_latency_display_on);
+#endif
+		mutex_lock(&wac_i2c->cpu_latency_mutex);
+		wacom_cpu_latency_request_nolock(wac_i2c, wac_i2c->cpu_latency_display_on);
+		mutex_unlock(&wac_i2c->cpu_latency_mutex);
+	}
+#endif
+
 	return 0;
+
+#if IS_ENABLED(CONFIG_DRM_MEDIATEK)
+err_unregister_input:
+	input_unregister_device(wac_i2c->input);
+#endif
+
+err_clear_irq_affinity_hint:
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+	irq_set_affinity_hint(client->irq, NULL);
+#else
+	;
+#endif
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	//cpu_latency_qos_remove_request(&wac_i2c->pm_qos_request);
+#endif
 
 err_disable_gpios:
 	gpiod_set_value(wac_i2c->reset_gpiod, 1); /* reset */
@@ -649,7 +1148,6 @@ err_disable_gpios:
 err_disable_regulator:
 	wacom_regulator_control(wac_i2c, false);
 
-
 	return error;
 }
 
@@ -657,7 +1155,13 @@ static int wacom_i2c_remove(struct i2c_client *client)
 {
 	struct wacom_i2c *wac_i2c = i2c_get_clientdata(client);
 
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+	irq_set_affinity_hint(client->irq, NULL);
+#endif
 	free_irq(client->irq, wac_i2c);
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	//cpu_latency_qos_remove_request(&wac_i2c->pm_qos_request);
+#endif
 	input_unregister_device(wac_i2c->input);
 	sysfs_remove_group(&client->dev.kobj, &fw_attr_group);
 

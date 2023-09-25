@@ -25,6 +25,9 @@
 #include "charger_class.h"
 #include "mtk_charger.h"
 
+/* get hw_rev (1-8) from device tree <&chosen> */
+static u32 hw_rev = (u32) -1;
+
 static bool dbg_log_en;
 module_param(dbg_log_en, bool, 0644);
 #define mt_dbg(dev, fmt, ...) \
@@ -112,9 +115,9 @@ enum mt6375_chg_reg_field {
 	/* MT6375_REG_CHG_ICHG */
 	F_CC,
 	/* MT6375_REG_CHG_TMR */
-	F_CHG_TMR, F_CHG_TMR_EN,
+	F_CHG_TMR, F_CHG_TMR_EN, F_IEOC_DEG,
 	/* MT6375_REG_CHG_EOC */
-	F_EOC_RST, F_TE, F_IEOC,
+	F_EOC_RST, F_TE, F_IEOC, F_EOC_TIME,
 	/* MT6375_REG_CHG_VSYS */
 	F_BLEED_DIS_EN,
 	/* MT6375_REG_CHG_WDT */
@@ -256,6 +259,8 @@ struct mt6375_chg_platform_data {
 	u32 mivr;
 	u32 ichg;
 	u32 ieoc;
+	u32 ieoc_deg;
+	u32 eoc_time;
 	u32 cv;
 	u32 wdt;
 	u32 otg_lbp;
@@ -329,6 +334,11 @@ static const u32 mt6375_chg_dpdm_ldo_vsel[] = {
 	600, 650, 700, 750, 1800, 2800, 3300,
 };
 
+/* IEOC deglitch time (ms), defaut 256ms */
+static const u32 mt6375_chg_ieoc_deg[] = {
+	2, 256, 1024, 2048,
+};
+
 #define MT6375_CHG_RANGE(_min, _max, _step, _offset, _ru) \
 { \
 	.min = _min, \
@@ -350,7 +360,9 @@ static const struct mt6375_chg_range mt6375_chg_ranges[F_MAX] = {
 	[F_VREC] = MT6375_CHG_RANGE(100, 200, 100, 0, false),
 	[F_CC] = MT6375_CHG_RANGE(300, 3150, 50, 6, false),
 	[F_CHG_TMR] = MT6375_CHG_RANGE(5, 20, 5, 0, false),
+	[F_IEOC_DEG] = MT6375_CHG_RANGE_T(mt6375_chg_ieoc_deg, false),
 	[F_IEOC] = MT6375_CHG_RANGE(100, 800, 50, 1, false),
+	[F_EOC_TIME] = MT6375_CHG_RANGE(0, 45, 15, 0, false),
 	[F_WDT] = MT6375_CHG_RANGE_T(mt6375_chg_wdt, false),
 	[F_PE20_CODE] = MT6375_CHG_RANGE(5500, 20000, 500, 0, false),
 	[F_AICC_VTH] = MT6375_CHG_RANGE(3900, 13400, 100, 0, true),
@@ -390,11 +402,13 @@ static const struct mt6375_chg_field mt6375_chg_fields[F_MAX] = {
 	MT6375_CHG_FIELD(F_CV, MT6375_REG_CHG_VCHG, 0, 6),
 	MT6375_CHG_FIELD_RANGE(F_VREC, MT6375_REG_CHG_VCHG, 7, 7, true),
 	MT6375_CHG_FIELD(F_CC, MT6375_REG_CHG_ICHG, 0, 5),
+	MT6375_CHG_FIELD(F_IEOC_DEG, MT6375_REG_CHG_TMR, 0, 1),
 	MT6375_CHG_FIELD(F_CHG_TMR, MT6375_REG_CHG_TMR, 4, 5),
 	MT6375_CHG_FIELD(F_CHG_TMR_EN, MT6375_REG_CHG_TMR, 7, 7),
 	MT6375_CHG_FIELD(F_EOC_RST, MT6375_REG_CHG_EOC, 0, 0),
 	MT6375_CHG_FIELD(F_TE, MT6375_REG_CHG_EOC, 1, 1),
 	MT6375_CHG_FIELD(F_IEOC, MT6375_REG_CHG_EOC, 4, 7),
+	MT6375_CHG_FIELD(F_EOC_TIME, MT6375_REG_CHG_EOC, 2, 3),
 	MT6375_CHG_FIELD(F_BLEED_DIS_EN, MT6375_REG_CHG_VSYS, 7, 7),
 	MT6375_CHG_FIELD(F_WDT, MT6375_REG_CHG_WDT, 0, 1),
 	MT6375_CHG_FIELD(F_WDT_RST, MT6375_REG_CHG_WDT, 2, 2),
@@ -649,6 +663,8 @@ static const struct mt6375_chg_platform_data mt6375_chg_pdata_def = {
 	.mivr = 4400,
 	.ichg = 2000,
 	.ieoc = 150,
+	.ieoc_deg = 256,
+	.eoc_time = 0,
 	.cv = 4200,
 	.wdt = 40000,
 	.vbus_ov = 14500,
@@ -1115,6 +1131,7 @@ static int mt6375_chg_get_property(struct power_supply *psy,
 		if (ret < 0)
 			return ret;
 		val->intval = ret;
+		ret = 0;
 		break;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		mutex_lock(&ddata->pe_lock);
@@ -2266,6 +2283,7 @@ struct mt6375_chg_dtprop {
 
 static const struct mt6375_chg_dtprop mt6375_chg_dtprops[] = {
 	MT6375_CHG_DTPROP(vbus_ov, F_VBUS_OV, DTPROP_U32, false),
+	MT6375_CHG_DTPROP(ieoc_deg, F_IEOC_DEG, DTPROP_U32, true),
 	MT6375_CHG_DTPROP(chg_tmr, F_CHG_TMR, DTPROP_U32, false),
 	MT6375_CHG_DTPROP(chg_tmr_en, F_CHG_TMR_EN, DTPROP_BOOL, false),
 	MT6375_CHG_DTPROP(otg_lbp, F_OTG_LBP, DTPROP_U32, false),
@@ -2278,6 +2296,7 @@ static const struct mt6375_chg_dtprop mt6375_chg_dtprops[] = {
 	MT6375_CHG_DTPROP(aicr, F_IAICR, DTPROP_U32, true),
 	MT6375_CHG_DTPROP(ichg, F_CC, DTPROP_U32, true),
 	MT6375_CHG_DTPROP(ieoc, F_IEOC, DTPROP_U32, true),
+	MT6375_CHG_DTPROP(eoc_time, F_EOC_TIME, DTPROP_U32, true),
 	MT6375_CHG_DTPROP(cv, F_CV, DTPROP_U32, true),
 	MT6375_CHG_DTPROP(vrec, F_VREC, DTPROP_U32, true),
 	MT6375_CHG_DTPROP(dcdt_sel, F_DCDT_SEL, DTPROP_U32, true),
@@ -2370,6 +2389,21 @@ static int mt6375_chg_get_pdata(struct device *dev)
 			 tag->size, tag->tag, tag->boot_mode, tag->boot_type);
 		pdata->boot_mode = tag->boot_mode;
 		pdata->boot_type = tag->boot_type;
+
+		/* innocomm jagar evt2 eoc workaround */
+		if (of_property_read_u32(boot_np, "hw_rev", &hw_rev) < 0) //from <&chosen>
+			dev_err(dev, "failed to get hw_rev\n");
+		if (of_property_read_bool(boot_np, "jagar_evt2_eoc_workaround")) { //from <&chosen>
+			dev_notice(dev, "Jagar EVT2 EOC workaround is enable, hw_rev=%d.\n", hw_rev);
+			if (hw_rev == 2) {
+				dev_notice(dev, "Apply Jagar EVT2 EOC workaround!\n");
+				dev_notice(dev, "Original ieoc=%d ; eoc_time=%d\n", pdata->ieoc, pdata->eoc_time);
+				//Change ieoc to 100mA and ieoc_time to 30 mins after parsing dt props above.
+				pdata->ieoc = 100;
+				pdata->eoc_time = 30;
+				dev_notice(dev, "EVT2 ieoc=%d ; eoc_time=%d\n", pdata->ieoc, pdata->eoc_time);
+			}
+		}
 
 		/*
 		 * mediatek bc12_sel

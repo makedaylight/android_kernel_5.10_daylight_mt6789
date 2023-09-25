@@ -700,8 +700,10 @@ static int rt9471_charger_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		ret = __rt9471_get_aicr(chip);
-		if (ret > 0)
+		if (ret > 0) {
 			val->intval = ret;
+			ret = 0;
+		}
 		break;
 	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
 		val->intval = rt9471_linear_get_value(chip, F_VMIVR, RT9471_RANGE_MIVR);
@@ -1310,8 +1312,13 @@ static int rt9471_bc12_en_kthread(void *data)
 	const int max_wait_cnt = 200;
 
 wait:
+#if 0
 	wait_event(chip->bc12_en_req, atomic_read(&chip->bc12_en) >= 0 ||
 				      kthread_should_stop());
+#else
+	wait_event_interruptible(chip->bc12_en_req, atomic_read(&chip->bc12_en) >= 0 ||
+				      kthread_should_stop());
+#endif
 	if (kthread_should_stop()) {
 		dev_info(chip->dev, "%s bye\n", __func__);
 		return 0;

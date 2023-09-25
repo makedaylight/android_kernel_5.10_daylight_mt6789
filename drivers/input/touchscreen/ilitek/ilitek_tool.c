@@ -878,6 +878,160 @@ static ssize_t ilitek_update_fw_show(struct device *dev,
 
 static DEVICE_ATTR(update_fw, 0664, ilitek_update_fw_show, NULL);
 
+#ifdef INOCO_CPU_LATENCY_REQUEST
+void ilitek_cpu_latency_update_nolock(void);
+
+static ssize_t cpu_latency_check_time_show(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	if (ts->cpu_dev == NULL)
+		return sysfs_emit(buf, "unsupported\n");
+
+	return sysfs_emit(buf, "%u\n", jiffies_to_msecs(ts->cpu_latency_check_time));
+}
+
+/* refer to pm_qos_resume_latency_us_store() */
+static ssize_t cpu_latency_check_time_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t n)
+{
+	s32 value = 0;
+
+	if (ts->cpu_dev == NULL)
+		return -EINVAL;
+
+	if (kstrtos32(buf, 0, &value) || value < 0)
+		return -EINVAL;
+
+	tp_msg("new cpu_latency_check_time: %d msec(s)\n", value);
+
+	mutex_lock(&ts->cpu_latency_mutex);
+	if (value == 0)
+		ts->cpu_latency_check_time = 0;
+	else
+		ts->cpu_latency_check_time = msecs_to_jiffies(value);
+	ilitek_cpu_latency_update_nolock();
+	mutex_unlock(&ts->cpu_latency_mutex);
+
+	return n;
+}
+
+static DEVICE_ATTR_RW(cpu_latency_check_time);
+
+/* refer to pm_qos_resume_latency_us_show() */
+static ssize_t cpu_latency_display_on_show(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	s32 value = ts->cpu_latency_display_on;
+
+	if (ts->cpu_dev == NULL)
+		return sysfs_emit(buf, "unsupported\n");
+
+	if (value == 0)
+		return sysfs_emit(buf, "n/a\n");
+	if (value == PM_QOS_RESUME_LATENCY_NO_CONSTRAINT)
+		value = 0;
+
+	return sysfs_emit(buf, "%d\n", value);
+}
+
+/* refer to pm_qos_resume_latency_us_store() */
+static ssize_t cpu_latency_display_on_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t n)
+{
+	s32 value;
+
+	if (ts->cpu_dev == NULL)
+		return -EINVAL;
+
+	if (!kstrtos32(buf, 0, &value)) {
+		/*
+		 * Prevent users from writing negative or "no constraint" values
+		 * directly.
+		 */
+		if (value < 0 || value == PM_QOS_RESUME_LATENCY_NO_CONSTRAINT)
+			return -EINVAL;
+
+		if (value == 0)
+			value = PM_QOS_RESUME_LATENCY_NO_CONSTRAINT;
+	} else if (sysfs_streq(buf, "n/a")) {
+		value = 0;
+	} else {
+		return -EINVAL;
+	}
+
+	tp_msg("new cpu_latency_display_on: %d usec(s)\n", value);
+
+	mutex_lock(&ts->cpu_latency_mutex);
+	ts->cpu_latency_display_on = value;
+	ilitek_cpu_latency_update_nolock();
+	mutex_unlock(&ts->cpu_latency_mutex);
+
+	return n;
+}
+
+static DEVICE_ATTR_RW(cpu_latency_display_on);
+
+/* refer to pm_qos_resume_latency_us_show() */
+static ssize_t cpu_latency_touched_show(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	s32 value = ts->cpu_latency_touched;
+
+	if (ts->cpu_dev == NULL)
+		return sysfs_emit(buf, "unsupported\n");
+
+	if (value == 0)
+		return sysfs_emit(buf, "n/a\n");
+	if (value == PM_QOS_RESUME_LATENCY_NO_CONSTRAINT)
+		value = 0;
+
+	return sysfs_emit(buf, "%d\n", value);
+}
+
+/* refer to pm_qos_resume_latency_us_store() */
+static ssize_t cpu_latency_touched_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t n)
+{
+	s32 value;
+
+	if (ts->cpu_dev == NULL)
+		return -EINVAL;
+
+	if (!kstrtos32(buf, 0, &value)) {
+		/*
+		 * Prevent users from writing negative or "no constraint" values
+		 * directly.
+		 */
+		if (value < 0 || value == PM_QOS_RESUME_LATENCY_NO_CONSTRAINT)
+			return -EINVAL;
+
+		if (value == 0)
+			value = PM_QOS_RESUME_LATENCY_NO_CONSTRAINT;
+	} else if (sysfs_streq(buf, "n/a")) {
+		value = 0;
+	} else {
+		return -EINVAL;
+	}
+
+	tp_msg("new cpu_latency_touched: %d usec(s)\n", value);
+
+	mutex_lock(&ts->cpu_latency_mutex);
+	ts->cpu_latency_touched = value;
+	ilitek_cpu_latency_update_nolock();
+	mutex_unlock(&ts->cpu_latency_mutex);
+
+	return n;
+}
+
+static DEVICE_ATTR_RW(cpu_latency_touched);
+#endif
+
 static struct attribute *ilitek_sysfs_attrs_ctrl[] = {
 	&dev_attr_firmware_version.attr,
 	&dev_attr_product_id.attr,
@@ -885,6 +1039,11 @@ static struct attribute *ilitek_sysfs_attrs_ctrl[] = {
 	&dev_attr_low_power.attr,
 	&dev_attr_esd_check.attr,
 	&dev_attr_update_fw.attr,
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	&dev_attr_cpu_latency_check_time.attr,
+	&dev_attr_cpu_latency_display_on.attr,
+	&dev_attr_cpu_latency_touched.attr,
+#endif
 	NULL
 };
 

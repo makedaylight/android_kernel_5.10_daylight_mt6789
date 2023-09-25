@@ -97,20 +97,35 @@ static void sharp_check_sample_id(struct sharp *ctx)
 		if (ctx->sample_id1 == SHARP_TS_ID1) {
 			LCM_DEV_LOGI("Use TS Config\n");
 			ctx->lcm_config = TS_CONFIG;
-		} else if (ctx->sample_id1 == SHARP_ES_ID1) {
+		} else if ((ctx->sample_id1 & 0xf0) == SHARP_ES_ID1) {
 			if (ctx->sample_id3 == SHARP_PRE_ES_ID3) {
 				LCM_DEV_LOGI("Use Pre-ES Config\n");
 				ctx->lcm_config = PRE_ES_CONFIG;
 			} else {
-				LCM_DEV_LOGI("Use ES Config\n");
-				ctx->lcm_config = ES_CONFIG;
+				if (ctx->sample_id1 == SHARP_ES_ID1) {
+					LCM_DEV_LOGI("Use ES Config\n");
+					ctx->lcm_config = ES_CONFIG;
+				} else if (ctx->sample_id1 == SHARP_ES2_1_ID1) {
+					LCM_DEV_LOGI("Use ES2-1 Config\n");
+					ctx->lcm_config = ES2_1_CONFIG;
+				} else if (ctx->sample_id1 == SHARP_ES2_2_ID1) {
+					LCM_DEV_LOGI("Use ES2-2 Config\n");
+					ctx->lcm_config = ES2_2_CONFIG;
+				} else /*if (ctx->sample_id1 == SHARP_ES3_ID1)*/ {
+					LCM_DEV_LOGI("Use ES3 Config\n");
+					ctx->lcm_config = ES3_CONFIG;
+				}
 			}
-		} else if (ctx->sample_id1 == SHARP_CS_ID1) {
-			LCM_LOGI("Use CS Config\n");
-			ctx->lcm_config = CS_CONFIG;
-		} else if (ctx->sample_id1 == SHARP_MP_ID1) {
-			LCM_LOGI("Use MP Config\n");
-			ctx->lcm_config = MP_CONFIG;
+		} else if ((ctx->sample_id1 & 0xf0) == SHARP_CS_ID1) {
+			/*if (ctx->sample_id1 == SHARP_CS_ID1)*/ {
+				LCM_LOGI("Use CS Config\n");
+				ctx->lcm_config = CS_CONFIG;
+			}
+		} else if ((ctx->sample_id1 & 0xf0) == SHARP_MP_ID1) {
+			/*if (ctx->sample_id1 == SHARP_MP_ID1)*/ {
+				LCM_LOGI("Use MP Config\n");
+				ctx->lcm_config = MP_CONFIG;
+			}
 		} else {
 			LCM_LOGI("Unknown Sample ID (id1: 0x%02x, id2: 0x%02x)\n",
 				ctx->sample_id1, ctx->sample_id2);
@@ -340,9 +355,16 @@ static int sharp_panel_init(struct drm_panel *panel)
 	switch (ctx->lcm_config & SAMPLE_MASK) {
 	case SAMPLE_MP:
 	case SAMPLE_CS:
+	case SAMPLE_ES3:
+	case SAMPLE_ES2_2:
+		push_table(ctx, init_es2_2_120hz_3x_dsc, ARRAY_SIZE(init_es2_2_120hz_3x_dsc));
+		break;
+
+	case SAMPLE_ES2_1:
 	case SAMPLE_ES:
 		push_table(ctx, init_es_120hz_3x_dsc, ARRAY_SIZE(init_es_120hz_3x_dsc));
 		break;
+
 	case SAMPLE_PRE_ES:
 	case SAMPLE_TS:
 		if (ctx->lcm_config & VFP_CASE)
@@ -601,6 +623,9 @@ static int sharp_prepare(struct drm_panel *panel)
 		switch (ctx->lcm_config & SAMPLE_MASK) {
 		case SAMPLE_MP:
 		case SAMPLE_CS:
+		case SAMPLE_ES3:
+		case SAMPLE_ES2_2:
+		case SAMPLE_ES2_1:
 		case SAMPLE_ES:
 		case SAMPLE_PRE_ES:
 		case SAMPLE_TS:
@@ -698,8 +723,15 @@ static const DISP_MODE_120HZ_DSC_VFP(15, VFP_120HZ_3X_DSC_VFP_15HZ);
 static const DISP_MODE_120HZ_DSC_VFP(10, VFP_120HZ_3X_DSC_VFP_10HZ);
 // display_mode_6hz_dsc_vfp
 static const DISP_MODE_120HZ_DSC_VFP(6, VFP_120HZ_3X_DSC_VFP_6HZ);
+#define DSC_VFP_FRAMESKIP_1HZ_BASE		(24)
 // display_mode_1hz_dsc_vfp_frameskip
-static const DISP_MODE_120HZ_DSC(1hz_dsc_vfp_frameskip, CLOCK_KHZ_120HZ_3X_DSC_VFP_FRAMESKIP_1HZ, VFP_120HZ_3X_DSC_VFP_10HZ);
+#if (DSC_VFP_FRAMESKIP_1HZ_BASE == 10)
+static const DISP_MODE_120HZ_DSC(1hz_dsc_vfp_frameskip, CLOCK_KHZ_120HZ_3X_DSC_10HZ_VFP_FRAMESKIP_1HZ, VFP_120HZ_3X_DSC_VFP_10HZ);
+#elif (DSC_VFP_FRAMESKIP_1HZ_BASE == 24)
+static const DISP_MODE_120HZ_DSC(1hz_dsc_vfp_frameskip, CLOCK_KHZ_120HZ_3X_DSC_24HZ_VFP_FRAMESKIP_1HZ, VFP_120HZ_3X_DSC_VFP_24HZ);
+#else
+static const DISP_MODE_120HZ_DSC(1hz_dsc_vfp_frameskip, CLOCK_KHZ_120HZ_3X_DSC_30HZ_VFP_FRAMESKIP_1HZ, VFP_120HZ_3X_DSC_VFP_30HZ);
+#endif
 // display_mode_60hz_dsc_frameskip
 static const DISP_MODE_120HZ_DSC_FRAMESKIP(60, CLOCK_KHZ_120HZ_3X_DSC_FRAMESKIP_60HZ);
 // display_mode_30hz_dsc_frameskip
@@ -967,7 +999,13 @@ static PANEL_EXT_PARAMS_120HZ_DSC_VFP_FRAMESKIP(10, VFP_120HZ_3X_DSC_VFP_10HZ, V
 // ext_params_6hz_dsc_vfp_frameskip
 static PANEL_EXT_PARAMS_120HZ_DSC_VFP_FRAMESKIP(6, VFP_120HZ_3X_DSC_VFP_6HZ, VFP_120HZ_3X_DSC_VFP_6HZ);
 // ext_params_1hz_dsc_vfp_frameskip
-static PANEL_EXT_PARAMS_120HZ_DSC_DYN(1hz_dsc_vfp_frameskip, VFP_120HZ_3X_DSC_VFP_10HZ, VFP_120HZ_3X_DSC_VFP_10HZ, 10, 0xFF, 0x25, 0xF2, 0x09, 0xF3, 0x01, 0);
+#if (DSC_VFP_FRAMESKIP_1HZ_BASE == 10)
+static PANEL_EXT_PARAMS_120HZ_DSC_DYN(1hz_dsc_vfp_frameskip, VFP_120HZ_3X_DSC_VFP_10HZ, VFP_120HZ_3X_DSC_VFP_10HZ, 10, 0xFF, 0x25, 0xF2,  9, 0xF3, 1, 0);
+#elif (DSC_VFP_FRAMESKIP_1HZ_BASE == 24)
+static PANEL_EXT_PARAMS_120HZ_DSC_DYN(1hz_dsc_vfp_frameskip, VFP_120HZ_3X_DSC_VFP_24HZ, VFP_120HZ_3X_DSC_VFP_24HZ, 24, 0xFF, 0x25, 0xF2, 23, 0xF3, 1, 0);
+#else
+static PANEL_EXT_PARAMS_120HZ_DSC_DYN(1hz_dsc_vfp_frameskip, VFP_120HZ_3X_DSC_VFP_30HZ, VFP_120HZ_3X_DSC_VFP_30HZ, 30, 0xFF, 0x25, 0xF2, 29, 0xF3, 1, 0);
+#endif
 // ext_params_60hz_dsc_frameskip
 static PANEL_EXT_PARAMS_120HZ_DSC_FRAMESKIP(60, 120, 0xFF, 0x25, 0xF2, 0x01, 0xF3, 0x01);
 // ext_params_30hz_dsc_frameskip
@@ -1474,6 +1512,15 @@ static ssize_t sharp_state_show(struct device *dev,
 	case SAMPLE_CS:
 		s += sprintf(s, "Panel: CS sample\n");
 		break;
+	case SAMPLE_ES3:
+		s += sprintf(s, "Panel: ES3 sample\n");
+		break;
+	case SAMPLE_ES2_2:
+		s += sprintf(s, "Panel: ES2-2 sample\n");
+		break;
+	case SAMPLE_ES2_1:
+		s += sprintf(s, "Panel: ES2-1 sample\n");
+		break;
 	case SAMPLE_ES:
 		s += sprintf(s, "Panel: ES sample\n");
 		break;
@@ -1529,8 +1576,11 @@ static int sharp_probe(struct mipi_dsi_device *dsi)
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
-			MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_EOT_PACKET |
-			MIPI_DSI_CLOCK_NON_CONTINUOUS;
+			MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_EOT_PACKET;
+
+#ifdef USE_DSI_CLOCK_NON_CONTINUOUS
+	dsi->mode_flags |= MIPI_DSI_CLOCK_NON_CONTINUOUS;
+#endif
 
 	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->reset_gpio)) {
@@ -1584,6 +1634,9 @@ static int sharp_probe(struct mipi_dsi_device *dsi)
 		switch (ctx->lcm_config & SAMPLE_MASK) {
 		case SAMPLE_MP:
 		case SAMPLE_CS:
+		case SAMPLE_ES3:
+		case SAMPLE_ES2_2:
+		case SAMPLE_ES2_1:
 		case SAMPLE_ES:
 		case SAMPLE_PRE_ES:
 		case SAMPLE_TS:

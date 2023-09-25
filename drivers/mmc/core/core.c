@@ -400,7 +400,13 @@ void mmc_wait_for_req_done(struct mmc_host *host, struct mmc_request *mrq)
 	struct mmc_command *cmd;
 
 	while (1) {
+#if 0
 		wait_for_completion(&mrq->completion);
+#else
+		while (!wait_for_completion_timeout(&mrq->completion, 30*HZ/*30secs*/))
+			dev_err(&host->class_dev, "can't complete cmd %d (arg 0x%x); %p\n",
+				mrq->cmd->opcode, mrq->cmd->arg, mrq);
+#endif
 
 		cmd = mrq->cmd;
 
@@ -410,8 +416,13 @@ void mmc_wait_for_req_done(struct mmc_host *host, struct mmc_request *mrq)
 
 		mmc_retune_recheck(host);
 
+#if 0
 		pr_debug("%s: req failed (CMD%u): %d, retrying...\n",
 			 mmc_hostname(host), cmd->opcode, cmd->error);
+#else
+		pr_warn("%s: req failed (CMD%u; arg 0x%x): %d, retrying...\n",
+			 mmc_hostname(host), cmd->opcode, cmd->arg, cmd->error);
+#endif
 		cmd->retries--;
 		cmd->error = 0;
 		__mmc_start_request(host, mrq);

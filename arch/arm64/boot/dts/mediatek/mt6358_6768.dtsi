@@ -115,7 +115,7 @@
 		};
 		imp {
 			channel = <AUXADC_IMP>;
-			resistance-ratio = <7 2>;
+			resistance-ratio = <3 1>;
 			avg-num = <128>;
 		};
 		imix_r {
@@ -261,12 +261,6 @@
 			regulator-min-microvolt = <600000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-enable-ramp-delay = <3300>;
-		};
-		mt_pmic_vsim1_ldo_reg: ldo_vsim1 {
-			regulator-name = "vsim1";
-			regulator-min-microvolt = <1700000>;
-			regulator-max-microvolt = <3100000>;
-			regulator-enable-ramp-delay = <540>;
 		};
 		mt_pmic_vibr_ldo_reg: ldo_vibr {
 			regulator-name = "vibr";
@@ -442,12 +436,6 @@
 			regulator-min-microvolt = <2800000>;
 			regulator-max-microvolt = <2800000>;
 			regulator-enable-ramp-delay = <270>;
-		};
-		mt_pmic_vsim2_ldo_reg: ldo_vsim2 {
-			regulator-name = "vsim2";
-			regulator-min-microvolt = <1700000>;
-			regulator-max-microvolt = <3100000>;
-			regulator-enable-ramp-delay = <540>;
 		};
 		mt_pmic_va09_ldo_reg: ldo_va09 {
 			regulator-name = "va09";

@@ -317,6 +317,12 @@ config BATTERY_BQ27XXX_DT_UPDATES_NVM
 	  general-purpose kernels, as this can cause misconfiguration of a
 	  smart battery with embedded NVM/flash.
 
+config BATTERY_ID
+	bool "Read Battery ID"
+	depends on BATTERY_BQ27XXX
+	help
+	  Say Y here to enable identifying battery ID by reading ADC value.
+
 config BATTERY_DA9030
 	tristate "DA9030 battery driver"
 	depends on PMIC_DA903X

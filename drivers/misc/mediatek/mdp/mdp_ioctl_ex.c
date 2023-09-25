@@ -775,7 +775,8 @@ static int mdp_implement_read_v1(struct mdp_submit *user_job,
 			CMDQ_ERR("%s read:%d engine:%d offset:%#x addr:%#x\n",
 				__func__, i, hw_metas[i].engine,
 				hw_metas[i].offset, reg_addr);
-			continue;
+			status = -EINVAL;
+			break;
 		}
 		CMDQ_MSG("%s read:%d engine:%d offset:%#x addr:%#x\n",
 			__func__, i, hw_metas[i].engine,
@@ -1008,6 +1009,9 @@ s32 mdp_ioctl_async_wait(unsigned long param)
 		status = -EFAULT;
 		goto done;
 	}
+
+	/* prevent ioctl release when waiting for task done */
+	cmdq_remove_handle_from_handle_active(handle);
 
 	do {
 		/* wait for task done */

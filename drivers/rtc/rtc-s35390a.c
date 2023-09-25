@@ -11,7 +11,7 @@
 #define S35390A_SLAVE_RTC_DETECT_DELAY_JIFFIES	(HZ)
 #define S35390A_SLAVE_RTC_DETECT_MAX_COUNT	(5)
 
-#define S35390A_DEBUG
+//#define S35390A_DEBUG
 //#define S35390A_VERBOSE_DEBUG
 
 #ifdef S35390A_VERBOSE_DEBUG
@@ -114,6 +114,11 @@ struct s35390a {
 	struct ratelimit_state slave_set_time_rs;
 #endif
 };
+
+#ifdef INOCO_PCBA_BUILD
+static int rtc_alarm_disable = 0;
+module_param(rtc_alarm_disable, int, 0644);
+#endif
 
 static int s35390a_set_reg(struct s35390a *s35390a, int reg, char *buf, int len)
 {
@@ -328,6 +333,13 @@ static int s35390a_alarm_irq_enable(struct s35390a *s35390a, unsigned enabled)
 	char sts = 0;
 	int err;
 
+#ifdef INOCO_PCBA_BUILD
+	if (rtc_alarm_disable && enabled) {
+		enabled = 0;
+		dev_alert(s35390a->dev, "PCBA: %s: disable RTC alarm\n", __func__);
+	}
+#endif
+
 	if (enabled)
 		sts |= s35390a->alarm_ien;
 
@@ -395,7 +407,7 @@ static int s35390a_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	err = s35390a_set_reg(s35390a, S35390A_CMD_TIME1, buf, sizeof(buf));
 
 	if (!err)
-		dev_notice(s35390a->dev, "set time: %04d/%02d/%02d (%d) %02d:%02d:%02d\n",
+		dev_alert(s35390a->dev, "set time: %04d/%02d/%02d (%d) %02d:%02d:%02d\n",
 			tm->tm_year + RTC_BASE_YEAR, tm->tm_mon + 1, tm->tm_mday,
 			tm->tm_wday, tm->tm_hour, tm->tm_min, tm->tm_sec);
 
@@ -420,6 +432,9 @@ static int s35390a_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	struct s35390a *s35390a = i2c_get_clientdata(client);
 	char buf[7];
 	int i, err;
+#ifdef CONFIG_RTC_DRV_S35390A_SUPPORT_SLAVE_RTC
+	bool slave_sync = false;
+#endif
 
 	err = s35390a_get_reg(s35390a, S35390A_CMD_TIME1, buf, sizeof(buf));
 	if (err)
@@ -446,15 +461,23 @@ static int s35390a_rtc_read_time(struct device *dev, struct rtc_time *tm)
 			err = s35390a->slave_rtcdev->ops->set_time(s35390a->slave_parent, &time);
 			if (err)
 				dev_err(s35390a->dev, "set slave-rtc time err %d\n", err);
+			else
+				slave_sync = true;
 		}
 	}
 #endif
 
 	if (s35390a->resume) {
 		s35390a->resume = false;
-		dev_notice(s35390a->dev, "get time: [resume] %04d/%02d/%02d (%d) %02d:%02d:%02d\n",
+		dev_alert(s35390a->dev, "get time: [resume] %04d/%02d/%02d (%d) %02d:%02d:%02d\n",
 			tm->tm_year + RTC_BASE_YEAR, tm->tm_mon + 1, tm->tm_mday,
 			tm->tm_wday, tm->tm_hour, tm->tm_min, tm->tm_sec);
+#ifdef CONFIG_RTC_DRV_S35390A_SUPPORT_SLAVE_RTC
+	} else if (slave_sync) {
+		dev_alert(s35390a->dev, "get time: [sync slave] %04d/%02d/%02d (%d) %02d:%02d:%02d\n",
+			tm->tm_year + RTC_BASE_YEAR, tm->tm_mon + 1, tm->tm_mday,
+			tm->tm_wday, tm->tm_hour, tm->tm_min, tm->tm_sec);
+#endif
 	} else {
 		dev_dbg(&client->dev, "get time: %04d/%02d/%02d (%d) %02d:%02d:%02d\n",
 			tm->tm_year + RTC_BASE_YEAR, tm->tm_mon + 1, tm->tm_mday,
@@ -470,6 +493,13 @@ static int s35390a_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	struct s35390a *s35390a = i2c_get_clientdata(client);
 	char buf[3], sts = 0;
 	int err, i;
+
+#ifdef INOCO_PCBA_BUILD
+	if (rtc_alarm_disable && alm->enabled) {
+		alm->enabled = 0;
+		dev_alert(s35390a->dev, "PCBA: %s: disable RTC alarm\n", __func__);
+	}
+#endif
 
 #ifdef CONFIG_RTC_DRV_S35390A_SUPPORT_SLAVE_RTC
 	if (s35390a->slave_rtcdev) {
@@ -498,7 +528,7 @@ static int s35390a_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 		return err;
 
 	if (!alm->enabled) {
-		dev_notice(s35390a->dev, "set alarm: [DIS] (%04d/%02d/%02d (%d) %02d:%02d:%02d)\n",
+		dev_alert(s35390a->dev, "set alarm: [DIS] %04d/%02d/%02d (%d) %02d:%02d:%02d\n",
 			alm->time.tm_year + RTC_BASE_YEAR, alm->time.tm_mon + 1, alm->time.tm_mday,
 			alm->time.tm_wday, alm->time.tm_hour, alm->time.tm_min, alm->time.tm_sec);
 		return 0;
@@ -541,7 +571,7 @@ static int s35390a_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	err = s35390a_set_reg(s35390a, s35390a->alarm_reg, buf,
 								sizeof(buf));
 	if (!err)
-		dev_notice(s35390a->dev, "set alarm: [EN] (%04d/%02d/%02d) (%d) %02d:%02d:00\n",
+		dev_alert(s35390a->dev, "set alarm: [EN] %04d/%02d/%02d (%d) %02d:%02d:00\n",
 			alm->time.tm_year + RTC_BASE_YEAR, alm->time.tm_mon + 1, alm->time.tm_mday,
 			alm->time.tm_wday, alm->time.tm_hour, alm->time.tm_min);
 
@@ -647,7 +677,7 @@ static int s35390a_rtc_alarm_irq_enable(struct device *dev, unsigned enabled)
 
 	err = s35390a_alarm_irq_enable(s35390a, enabled);
 	if (!err)
-		dev_notice(s35390a->dev, "alarm irq %s\n", enabled ? "enabled" : "disabled");
+		dev_alert(s35390a->dev, "alarm irq %s\n", enabled ? "enabled" : "disabled");
 
 	return err;
 }
@@ -685,7 +715,7 @@ static void s35390a_detect_slave_rtc_work(struct work_struct *work)
 		/* found */
 		s35390a->slave_rtcdev = rtcdev;
 		s35390a->slave_parent = rtcdev->dev.parent;
-		dev_notice(s35390a->dev, "found slave rtc: %s (%s)\n",
+		dev_alert(s35390a->dev, "found slave rtc: %s (%s)\n",
 			dev_name(&rtcdev->dev), dev_name(s35390a->slave_parent));
 
 		/* sync RTC time */

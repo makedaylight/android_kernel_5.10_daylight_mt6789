@@ -93,6 +93,82 @@
 
 #define INVALID_REG_ADDR	0xff
 
+#ifdef CONFIG_BATTERY_ID
+
+#define VERSION_1 "ID_001"
+#define VERSION_2 "ID_002"
+#define VERSION_3 "ID_003"
+#define VERSION_4 "ID_004_UTL"
+
+#include <linux/iio/consumer.h>
+#include <linux/iio/iio.h>
+
+char err_mesg[64];
+int adc_num = -1;
+int adc_mV = -1;
+int num_table = 0;
+s32 *lookup_table;
+
+static int get_adc_table(struct device *dev)
+{
+	int ret = -1;
+	struct device_node *np = dev->of_node;
+	num_table = of_property_count_elems_of_size(np, "version-lookup-table", sizeof(int));
+	if (num_table <= 0) {
+		printk("Error: Number of table mismatch.\n");
+		goto Fail;
+	}
+
+	lookup_table = devm_kcalloc(dev, num_table, sizeof(*lookup_table), GFP_KERNEL);
+	if (!lookup_table) {
+		printk("Error: kcalloc mem error.\n");
+		return -ENOMEM;
+	}
+
+	ret = of_property_read_u32_array(np, "version-lookup-table", (u32 *)lookup_table, num_table);
+	if (ret < 0) {
+		dev_err(dev, "Error: Failed to read version-lookup-table: %d\n", ret);
+		goto Fail;
+	}
+	return 0;
+
+Fail:
+	return -1;
+}
+
+static int get_adc_info(struct device *dev)
+{
+	int ret = -1;
+	int mV = -1;
+	struct iio_channel *md_channel;
+
+	md_channel = iio_channel_get(dev, "version-channel");
+	ret = IS_ERR(md_channel);
+	if (ret) {
+		if (PTR_ERR(md_channel) == -EPROBE_DEFER) {
+			dev_info(dev, "probe retry requested for auxadc\n");
+			return -EPROBE_DEFER;
+		}
+		goto Fail;
+	}
+	adc_num = md_channel->indio_dev->num_channels;
+
+	ret = iio_read_channel_processed(md_channel, &mV);
+	if (ret < 0) {
+		printk("Error: iio_read_channel_processed fail");
+		goto Fail;
+	}
+	adc_mV = mV;
+	sprintf(err_mesg, "Error mv = %d", mV);
+	iio_channel_release(md_channel);
+
+	return ret;
+
+Fail:
+	return -1;
+}
+#endif
+
 /*
  * bq27xxx_reg_index - Register names
  *
@@ -478,19 +554,22 @@ static u8
 	bq28z610_regs[BQ27XXX_REG_MAX] = {
 		[BQ27XXX_REG_CTRL] = 0x00,
 		[BQ27XXX_REG_TEMP] = 0x06,
-		[BQ27XXX_REG_INT_TEMP] = INVALID_REG_ADDR,
+		//[BQ27XXX_REG_INT_TEMP] = INVALID_REG_ADDR,
+		[BQ27XXX_REG_INT_TEMP] = 0x28,
 		[BQ27XXX_REG_VOLT] = 0x08,
 		[BQ27XXX_REG_AI] = 0x14,
 		[BQ27XXX_REG_FLAGS] = 0x0a,
 		[BQ27XXX_REG_TTE] = 0x16,
 		[BQ27XXX_REG_TTF] = 0x18,
-		[BQ27XXX_REG_TTES] = INVALID_REG_ADDR,
+		//[BQ27XXX_REG_TTES] = INVALID_REG_ADDR,
+		[BQ27XXX_REG_TTES] = 0x1c,
 		[BQ27XXX_REG_TTECP] = INVALID_REG_ADDR,
 		[BQ27XXX_REG_NAC] = INVALID_REG_ADDR,
 		[BQ27XXX_REG_RC] = 0x10,
 		[BQ27XXX_REG_FCC] = 0x12,
 		[BQ27XXX_REG_CYCT] = 0x2a,
-		[BQ27XXX_REG_AE] = 0x22,
+		//[BQ27XXX_REG_AE] = 0x22,
+		[BQ27XXX_REG_AE] = INVALID_REG_ADDR,
 		[BQ27XXX_REG_SOC] = 0x2c,
 		[BQ27XXX_REG_DCAP] = 0x3c,
 		[BQ27XXX_REG_AP] = 0x22,
@@ -812,6 +891,10 @@ static enum power_supply_property bq28z610_props[] = {
 	POWER_SUPPLY_PROP_POWER_AVG,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+#ifdef CONFIG_BATTERY_ID
+	POWER_SUPPLY_PROP_SERIAL_NUMBER
+#endif
 };
 
 static enum power_supply_property bq34z100_props[] = {
@@ -854,6 +937,10 @@ static enum power_supply_property bq78z100_props[] = {
 	POWER_SUPPLY_PROP_POWER_AVG,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+#ifdef CONFIG_BATTERY_ID
+	POWER_SUPPLY_PROP_SERIAL_NUMBER
+#endif
 };
 
 struct bq27xxx_dm_reg {
@@ -1114,15 +1201,32 @@ static inline int bq27xxx_read(struct bq27xxx_device_info *di, int reg_index,
 			       bool single)
 {
 	int ret;
+	int i;
+	const int retries = 3;
 
 	if (!di || di->regs[reg_index] == INVALID_REG_ADDR)
 		return -EINVAL;
 
-	ret = di->bus.read(di, di->regs[reg_index], single);
-	if (ret < 0)
-		dev_err(di->dev, "failed to read register 0x%02x (index %d)\n",
-			di->regs[reg_index], reg_index);
+	if (!di->bus.read)
+		return -EPERM;
 
+	dev_dbg(di->dev, "%s: register 0x%02x (index %d)\n", __func__, di->regs[reg_index], reg_index);
+
+	//Laker: error is seen for register [0x06] TEMP/Temperature (fixed by adding 25ms delay before reading temperature and after reading flags),
+	//       [0x0a] FLAGS/BatteryStatus
+	//       [0x14] AI/AverageCurrent
+	ret = di->bus.read(di, di->regs[reg_index], single);
+	for (i = 1; ret < 0 && i <= retries; i++) {
+		dev_warn(di->dev, "failed to read register 0x%02x (index %d), Retry...%d\n",
+				di->regs[reg_index], reg_index, i);
+		BQ27XXX_MSLEEP(50); //It helps but could be tuned. 25 => Retry...1 failure sometimes, Retry...2 ok
+		ret = di->bus.read(di, di->regs[reg_index], single);
+	}
+	if (ret < 0)
+		dev_err(di->dev, "%s: failed to read register 0x%02x (index %d)\n",
+				__func__, di->regs[reg_index], reg_index);
+
+	BQ27XXX_MSLEEP(3); //avoid i2c error due to continuous read (it won't happen if dev_dbg is enabled.)
 	return ret;
 }
 
@@ -1136,6 +1240,8 @@ static inline int bq27xxx_write(struct bq27xxx_device_info *di, int reg_index,
 
 	if (!di->bus.write)
 		return -EPERM;
+
+	dev_dbg(di->dev, "%s: register 0x%02x (index %d)\n", __func__, di->regs[reg_index], reg_index);
 
 	ret = di->bus.write(di, di->regs[reg_index], value, single);
 	if (ret < 0)
@@ -1738,6 +1844,9 @@ static bool bq27xxx_battery_undertemp(struct bq27xxx_device_info *di, u16 flags)
  */
 static bool bq27xxx_battery_dead(struct bq27xxx_device_info *di, u16 flags)
 {
+	dev_dbg(di->dev, "%s: capacity=%d; FLAG_FDC=%d \n", __func__,
+			di->cache.capacity, (flags & BQ27Z561_FLAG_FDC) ? 1 : 0);
+
 	if (di->opts & BQ27XXX_O_ZERO)
 		return flags & (BQ27000_FLAG_EDV1 | BQ27000_FLAG_EDVF);
 	else if (di->opts & BQ27Z561_O_BITS)
@@ -1746,6 +1855,7 @@ static bool bq27xxx_battery_dead(struct bq27xxx_device_info *di, u16 flags)
 		return flags & (BQ27XXX_FLAG_SOC1 | BQ27XXX_FLAG_SOCF);
 }
 
+#if 0
 static int bq27xxx_battery_read_health(struct bq27xxx_device_info *di)
 {
 	/* Unlikely but important to return first */
@@ -1758,6 +1868,20 @@ static int bq27xxx_battery_read_health(struct bq27xxx_device_info *di)
 
 	return POWER_SUPPLY_HEALTH_GOOD;
 }
+#else
+static int bq27xxx_battery_read_health(struct bq27xxx_device_info *di, int flags)
+{
+	/* Unlikely but important to return first */
+	if (unlikely(bq27xxx_battery_overtemp(di, flags)))
+		return POWER_SUPPLY_HEALTH_OVERHEAT;
+	if (unlikely(bq27xxx_battery_undertemp(di, flags)))
+		return POWER_SUPPLY_HEALTH_COLD;
+	if (unlikely(bq27xxx_battery_dead(di, flags)))
+		return POWER_SUPPLY_HEALTH_DEAD;
+
+	return POWER_SUPPLY_HEALTH_GOOD;
+}
+#endif
 
 static int
 bq27xxx_battery_current_and_status(struct bq27xxx_device_info *di,
@@ -1797,8 +1921,12 @@ void bq27xxx_battery_update(struct bq27xxx_device_info *di)
 			cache.capacity = bq27xxx_battery_read_soc(di);
 			if (di->regs[BQ27XXX_REG_AE] != INVALID_REG_ADDR)
 				cache.energy = bq27xxx_battery_read_energy(di);
+#if 0
 			di->cache.flags = cache.flags;
 			cache.health = bq27xxx_battery_read_health(di);
+#else
+			cache.health = bq27xxx_battery_read_health(di, cache.flags);
+#endif
 			cache.status = bq27xxx_battery_current_and_status(di, NULL, &val_status);
 			if (!cache.status) //no error, update status to correct value.
 				cache.status = val_status.intval;
@@ -1823,14 +1951,18 @@ void bq27xxx_battery_update(struct bq27xxx_device_info *di)
 
 	if ((di->cache.capacity != cache.capacity) ||
 	    (di->cache.flags != cache.flags) ||
-	    (di->cache.status != cache.status))
+	    (di->cache.status != cache.status)) {
+		dev_notice(di->dev, "%s: capacity: %d --> %d; flags: 0x%04x --> 0x%04x; status: %d --> %d;\n",
+				__func__, di->cache.capacity, cache.capacity, di->cache.flags, cache.flags, di->cache.status, cache.status);
 		power_supply_changed(di->bat);
+	}
 
 	//restore polling interval once the status is the same
 	if (di->cache.status == cache.status)
 		poll_interval = poll_interval_saved;
 
-	dev_info(di->dev, "%s status: %d --> %d; poll_interval=%d (saved:%d)\n", __func__, di->cache.status, cache.status, poll_interval, poll_interval_saved);
+	dev_dbg(di->dev, "%s: capacity: %d --> %d; flags: 0x%04x --> 0x%04x; status: %d --> %d; poll_interval=%d (saved:%d)\n",
+			__func__, di->cache.capacity, cache.capacity, di->cache.flags, cache.flags, di->cache.status, cache.status, poll_interval, poll_interval_saved);
 
 	//update di->cache if cache is changed
 	if (memcmp(&di->cache, &cache, sizeof(cache)) != 0)
@@ -1854,12 +1986,19 @@ static void bq27xxx_battery_poll(struct work_struct *work)
 
 static bool bq27xxx_battery_is_full(struct bq27xxx_device_info *di, int flags)
 {
-	if (di->opts & BQ27XXX_O_ZERO)
-		return (flags & BQ27000_FLAG_FC);
-	else if (di->opts & BQ27Z561_O_BITS)
-		return (flags & BQ27Z561_FLAG_FC);
-	else
-		return (flags & BQ27XXX_FLAG_FC);
+	dev_dbg(di->dev, "%s: capacity=%d; FLAG_FC=%d \n", __func__,
+			di->cache.capacity, (flags & BQ27Z561_FLAG_FC) ? 1 : 0);
+
+	if (di->cache.capacity == 100) {
+		if (di->opts & BQ27XXX_O_ZERO)
+			return (flags & BQ27000_FLAG_FC);
+		else if (di->opts & BQ27Z561_O_BITS)
+			return (flags & BQ27Z561_FLAG_FC);
+		else
+			return (flags & BQ27XXX_FLAG_FC);
+	} else {
+		return false;
+	}
 }
 
 /*
@@ -1920,8 +2059,10 @@ static int bq27xxx_battery_current_and_status(
 		} else if (curr > 0) {
 			val_status->intval = POWER_SUPPLY_STATUS_CHARGING;
 		} else { //curr == 0 or curr < 0
-			if (bq27xxx_battery_is_full(di, flags))
+			if (bq27xxx_battery_is_full(di, flags)) {
 				val_status->intval = POWER_SUPPLY_STATUS_FULL;
+				dev_notice(di->dev, "%s: Report battery is full\n", __func__);
+			}
 			else
 				val_status->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		}
@@ -1988,10 +2129,19 @@ static int bq27xxx_battery_capacity_level(struct bq27xxx_device_info *di,
 			level = POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;
 	}
 
- 	//Android will run ShutdownThread in case of level critical.
-	//Laker: [TODO] When will bq78z100 set level critical? capacity < 5% and/or ???
-	if (level == POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL && di->cache.capacity > 1)
+ 	//Android will run ShutdownThread in case of POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL.
+	//Depending on gauge IC configuration, it will set level critical when capacity < 5% or = 0% or ...
+	if (level == POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL && di->cache.capacity > 0) {
 		level = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
+		dev_notice(di->dev, "%s: Wait for capacity==0 to shutdown.\n", __func__);
+	} else if (level != POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL && di->cache.capacity == 0) { //[TODO] some battery gauge won't set level critical even when capacity = 0%
+		level = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL; //be careful, 0% may result from i2c error (EVT1@400KHz) or no battery case, => add no battery checking function
+		//level = POWER_SUPPLY_CAPACITY_LEVEL_LOW; //Laker: for testing only
+		dev_notice(di->dev, "%s: capacity==0; Don't wait for FLAG_FDC. We should shutdown now!\n", __func__);
+	} else if (level == POWER_SUPPLY_CAPACITY_LEVEL_FULL && di->cache.capacity != 100) {
+		level = POWER_SUPPLY_CAPACITY_LEVEL_HIGH;
+		dev_notice(di->dev, "%s: Almost full (FLAG_FC is set)! Wait for capacity==100.\n", __func__);
+	}
 
 	val->intval = level;
 
@@ -2034,6 +2184,11 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 					union power_supply_propval *val)
 {
 	int ret = 0;
+#ifdef CONFIG_BATTERY_ID
+	int ver = -1, i;
+	int range_h = 0, range_l = 0;
+#endif
+
 	struct bq27xxx_device_info *di = power_supply_get_drvdata(psy);
 
 	mutex_lock(&di->lock);
@@ -2124,6 +2279,56 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 		if (val->intval >= 0)
 			val->intval = ((val->intval) * 8000) / 100;
 		break;
+#ifdef CONFIG_BATTERY_ID
+	case POWER_SUPPLY_PROP_SERIAL_NUMBER:
+		ret = get_adc_info(di->dev);
+		if (ret < 0) {
+			printk("get adc info fail\n");
+		}
+
+		if(num_table % 2 != 0) {
+			val->strval = "Error: Number of table mismatch.";
+			break;
+		}
+
+		for(i = 0; i < num_table; i += 2) {
+			if(lookup_table[i] <= 150) {
+				range_h = lookup_table[i] * 135 / 100;			//+35%
+				range_l = lookup_table[i] * 65 / 100;			//-35%
+				if(adc_mV >= range_l && adc_mV <= range_h) {
+					ver = lookup_table[i + 1];
+					break;
+				}
+			} else {
+				range_h = lookup_table[i] * 115 / 100;			//+15%
+				range_l = lookup_table[i] * 85 / 100;			//-15%
+				if(adc_mV >= range_l && adc_mV <= range_h) {
+					ver = lookup_table[i + 1];
+					break;
+				}
+			}
+		}
+
+		switch(ver) {
+			case 1:
+				val->strval = VERSION_1;
+				break;
+			case 2:
+				val->strval = VERSION_2;
+				break;
+			case 3:
+				val->strval = VERSION_3;
+				break;
+			case 4:
+				val->strval = VERSION_4;
+				break;
+			default:
+				printk("Error: get version error mV = %d\n", adc_mV);
+				val->strval = err_mesg;
+				break;
+		}
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -2139,8 +2344,26 @@ static void bq27xxx_external_power_changed(struct power_supply *psy)
 	schedule_delayed_work(&di->work, 0);
 }
 
+
+/*
+ * Check if the battery exists by reading the BQ27XXX_REG_CTRL register
+ * Return false for the normal case and true for the no battery case
+ * (I2C bus or gauge IC problem may also result in no battery case.)
+ */
+static bool bq27xxx_is_no_battery(struct bq27xxx_device_info *di)
+{
+	int ret = 0;
+
+	ret = bq27xxx_read(di, BQ27XXX_REG_CTRL, false); //bq27xxx_read will retry...
+	if (ret < 0)
+		return true;
+	else
+		return false;
+}
+
 int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 {
+	int ret = 0;
 	struct power_supply_desc *psy_desc;
 	struct power_supply_config psy_cfg = {
 		.of_node = di->dev->of_node,
@@ -2154,6 +2377,11 @@ int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 	di->unseal_key = bq27xxx_chip_data[di->chip].unseal_key;
 	di->dm_regs    = bq27xxx_chip_data[di->chip].dm_regs;
 	di->opts       = bq27xxx_chip_data[di->chip].opts;
+
+	if (bq27xxx_is_no_battery(di)) {
+		dev_err(di->dev, "No battery gauge IC found!!!\n");
+		return -ENODEV;
+	}
 
 	psy_desc = devm_kzalloc(di->dev, sizeof(*psy_desc), GFP_KERNEL);
 	if (!psy_desc)
@@ -2181,6 +2409,13 @@ int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 	mutex_lock(&bq27xxx_list_lock);
 	list_add(&di->list, &bq27xxx_battery_devices);
 	mutex_unlock(&bq27xxx_list_lock);
+
+#ifdef CONFIG_BATTERY_ID
+	ret = get_adc_table(di->dev);
+	if (ret < 0) {
+		printk("get adc info fail\n");
+	}
+#endif
 
 	return 0;
 }

@@ -219,6 +219,8 @@ struct gpufreq_core_mask_info g_core_mask_table[] = {
  **************************************************/
 enum gpufreq_segment {
 	MT6833_SEGMENT = 1,
+	MT6833M_SEGMENT,
+	MT6833T_SEGMENT,		//Reserve Segment
 };
 
 enum gpufreq_clk_src {
@@ -466,5 +468,13 @@ unsigned int g_aging_table[][SIGNED_OPP_GPU_NUM] = {
 		0, 0, 0, 0, 0,                /* OPP 40~44 */
 	},
 };
+
+struct mt_gpufreq_power_table_info {
+	unsigned int gpufreq_khz;
+	unsigned int gpufreq_volt;
+	unsigned int gpufreq_power;
+};
+
+#define MT_GPUFREQ_STATIC_PWR_READY2USE
 
 #endif /* __GPUFREQ_MT6879_H__ */

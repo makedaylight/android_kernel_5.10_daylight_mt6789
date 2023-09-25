@@ -403,6 +403,11 @@ static int __maybe_unused ilitek_i2c_write_and_read(uint8_t *cmd, int w_len,
 		 .buf = buf, SCL_RATE(400000)}
 	};
 
+#ifdef INOCO_I2C_READ_BUFF_DMA_SAFE
+	if (buf && IS_ALIGNED((u64)buf, ARCH_KMALLOC_MINALIGN))
+		msgs[1].flags |= I2C_M_DMA_SAFE;
+#endif
+
 	/*
 	 * IMPORTANT: If I2C repeat start is required, please check with ILITEK.
 	 */
@@ -1361,7 +1366,7 @@ int ilitek_read_data_and_report_6XX(void)
 	int len = 0;
 	int max_cnt = 0;
 	struct touch_fmt *parser;
-	uint8_t checksum;
+	//uint8_t checksum;
 
 	/*
 	 * ISR may be activated after registering irq and
@@ -1418,7 +1423,7 @@ int ilitek_read_data_and_report_6XX(void)
 	/*
 	 * Check checksum for I2C comms. debug.
 	 */
-	checksum = ~(get_checksum(0, 63, ts->buf, 64)) + 1;
+	//checksum = ~(get_checksum(0, 63, ts->buf, 64)) + 1;
 	if (!(is_checksum_matched(ts->buf[63], 0, 63,
 	    			  ts->buf, sizeof(ts->buf))))
 		return 0;
@@ -1573,8 +1578,104 @@ static int ilitek_i2c_process_and_report(void)
 	return ret;
 }
 
+#ifdef INOCO_CPU_LATENCY_REQUEST
+static inline void ilitek_cpu_latency_request_nolock(s32 new_value)
+{
+	dev_pm_qos_update_request(ts->cpu_dev->power.qos->resume_latency_req,
+			new_value);
+#if 0
+	cpu_latency_qos_update_request(&ts->pm_qos_request,
+			new_value != PM_QOS_RESUME_LATENCY_NO_CONSTRAINT ?
+				new_value : PM_QOS_DEFAULT_VALUE);
+#endif
+}
+
+void ilitek_cpu_latency_update_nolock(void)
+{
+	if (!ts->cpu_dev)
+		return;
+
+	if (ts->system_suspend) {
+		ts->last_touched_time = 0;
+		cancel_delayed_work(&ts->cpu_latency_check_work);
+
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+		tp_msg("ilitek_cpu_latency_update: latency released (was suspend)\n");
+#endif
+		ilitek_cpu_latency_request_nolock(PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		//cpu_latency_qos_update_request(&ts->pm_qos_request, PM_QOS_DEFAULT_VALUE);
+	} else {
+		ts->last_touched_time = 0;
+		cancel_delayed_work(&ts->cpu_latency_check_work);
+
+		if (ts->cpu_latency_display_on > 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			tp_msg("ilitek_cpu_latency_update: latency display %d\n", ts->cpu_latency_display_on);
+#endif
+			ilitek_cpu_latency_request_nolock(ts->cpu_latency_display_on);
+		} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			tp_msg("ilitek_cpu_latency_update: latency released\n");
+#endif
+			ilitek_cpu_latency_request_nolock(PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		}
+	}
+}
+
+static void __maybe_unused ilitek_cpu_latency_check_work(struct work_struct *work)
+{
+	bool re_queue = false;
+
+	mutex_lock(&ts->cpu_latency_mutex);
+
+	if (ts->last_touched_time && ts->cpu_latency_check_time) {
+		u64 next_check = ts->last_touched_time + ts->cpu_latency_check_time;
+		u64 now = get_jiffies_64();
+
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+		tp_msg("ilitek_cpu_latency_check: time %u; last_touched_time %llu; next_check %llu; now %llu\n",
+				ts->cpu_latency_check_time, ts->last_touched_time, next_check, now);
+#endif
+		if (time_after_eq64(now, next_check)) {
+			if (ts->cpu_latency_display_on > 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				tp_msg("ilitek_cpu_latency_check: latency display %d\n", ts->cpu_latency_display_on);
+#endif
+				ilitek_cpu_latency_request_nolock(ts->cpu_latency_display_on);
+			} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				tp_msg("ilitek_cpu_latency_check: latency released\n");
+#endif
+				ilitek_cpu_latency_request_nolock(PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+			}
+		} else {
+			re_queue = true;
+		}
+	}
+
+	mutex_unlock(&ts->cpu_latency_mutex);
+
+	if (re_queue) {
+		if (schedule_delayed_work_on(ts->affinity_hint_cpu,
+				&ts->cpu_latency_check_work, ts->cpu_latency_check_time)) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			tp_msg("ilitek_cpu_latency_check: queue work\n");
+#endif
+		} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			tp_msg("ilitek_cpu_latency_check: work was queued\n");
+#endif
+		}
+	}
+}
+#endif
+
 static ISR_FUNC(ilitek_i2c_isr)
 {
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	bool use_cpu_latency = false;
+#endif
+
 	tp_dbg("\n");
 
 	atomic_set(&ts->get_INT, 1);
@@ -1587,6 +1688,22 @@ static ISR_FUNC(ilitek_i2c_isr)
 		ISR_RETURN(IRQ_HANDLED);
 	}
 
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	mutex_lock(&ts->cpu_latency_mutex);
+
+	if (ts->cpu_latency_touched > 0 &&
+			(ts->cpu_latency_display_on == 0 || ts->cpu_latency_touched < ts->cpu_latency_display_on)) {
+		use_cpu_latency = true;
+
+		if (ts->cpu_latency_touched < dev_pm_qos_requested_resume_latency(ts->cpu_dev)) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			tp_msg("ilitek_i2c_isr: latency touched %d\n", ts->cpu_latency_touched);
+#endif
+			ilitek_cpu_latency_request_nolock(ts->cpu_latency_touched);
+		}
+	}
+#endif
+
 #ifdef ILITEK_ISR_PROTECT
 	ilitek_irq_disable();
 #endif
@@ -1596,6 +1713,38 @@ static ISR_FUNC(ilitek_i2c_isr)
 
 #ifdef ILITEK_ISR_PROTECT
 	ilitek_irq_enable();
+#endif
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	if (use_cpu_latency) {
+		if (ts->cpu_latency_check_time) {
+			ts->last_touched_time = get_jiffies_64();
+			if (!delayed_work_pending(&ts->cpu_latency_check_work)) {
+				if (schedule_delayed_work_on(ts->affinity_hint_cpu,
+						&ts->cpu_latency_check_work, ts->cpu_latency_check_time)) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+					tp_msg("ilitek_i2c_isr: queue work\n");
+#endif
+				} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+					tp_msg("ilitek_i2c_isr: work was queued\n");
+#endif
+				}
+			}
+		} else if (ts->cpu_latency_display_on > 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			tp_msg("ilitek_i2c_isr: latency display %d\n", ts->cpu_latency_display_on);
+#endif
+			ilitek_cpu_latency_request_nolock(ts->cpu_latency_display_on);
+		} else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+			tp_msg("ilitek_i2c_isr: latency released\n");
+#endif
+			ilitek_cpu_latency_request_nolock(PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		}
+	}
+
+	mutex_unlock(&ts->cpu_latency_mutex);
 #endif
 
 	ts->esd_skip = false;
@@ -1632,11 +1781,83 @@ static int ilitek_request_irq(void)
 	if (ts->irq <= 0)
 		return -EINVAL;
 
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+	ts->affinity_hint_cpu = U32_MAX;
+#endif
+
+	if (ts->device->of_node) {
+#if defined(INOCO_SET_AFFINITY_HINT_CPU) || defined(INOCO_CPU_LATENCY_REQUEST)
+		u32 value = 0;
+#endif
+
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+		if (of_property_read_u32(ts->device->of_node, "affinity-hint-cpu", &value) == 0) {
+			error = irq_set_affinity_hint(ts->irq, get_cpu_mask(value));
+			if (error)
+				tp_err("set irq affinity hint err %d\n", error);
+			else {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				tp_msg("set irq affinity hint: cpu %u\n", value);
+#else
+				tp_dbg("set irq affinity hint: cpu %u\n", value);
+#endif
+				ts->affinity_hint_cpu = value;
+			}
+		}
+#endif
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+		if (ts->affinity_hint_cpu < CONFIG_NR_CPUS &&
+			(ts->cpu_dev = get_cpu_device(ts->affinity_hint_cpu)) != NULL) {
+			value = 0;
+			if (of_property_read_u32(ts->device->of_node, "cpu-latency-display-on", &value) == 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				tp_msg("cpu_latency_display_on: %u\n", value);
+#endif
+				ts->cpu_latency_display_on = value;
+			}
+
+			value = 0;
+			if (of_property_read_u32(ts->device->of_node, "cpu-latency-touched", &value) == 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				tp_msg("cpu_latency_touched: %u\n", value);
+#endif
+				ts->cpu_latency_touched = value;
+			}
+
+			value = 0;
+			if (of_property_read_u32(ts->device->of_node, "cpu-latency-check-time", &value) == 0) {
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+				tp_msg("cpu_latency_check_time: %u ms\n", value);
+#endif
+				if (value >= 1000) { /* msecs */
+					ts->cpu_latency_check_time = msecs_to_jiffies(value); /* jiffies */
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+					tp_msg("cpu_latency_check_time: %u jiffies\n", ts->cpu_latency_check_time);
+#endif
+				}
+			}
+			INIT_DELAYED_WORK(&ts->cpu_latency_check_work, ilitek_cpu_latency_check_work);
+		}
+#endif
+	}
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	//cpu_latency_qos_add_request(&ts->pm_qos_request, PM_QOS_DEFAULT_VALUE);
+	mutex_init(&ts->cpu_latency_mutex);
+#endif
+
 	error = request_threaded_irq(ts->irq, NULL, ilitek_i2c_isr,
 				     ts->irq_trigger_type | IRQF_ONESHOT,
 				     "ilitek_touch_irq", ts);
 	if (error) {
 		tp_err("request threaded irq failed, err: %d\n", error);
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+		irq_set_affinity_hint(ts->irq, NULL);
+#endif
+#ifdef INOCO_CPU_LATENCY_REQUEST
+		//cpu_latency_qos_remove_request(&ts->pm_qos_request);
+#endif
 		return error;
 	}
 #endif
@@ -1733,6 +1954,9 @@ static int __maybe_unused ilitek_update_thread(void *arg)
 		tp_msg("ilitek_update_thread, stop\n");
 		return -1;
 	}
+#ifdef INOCO_BOOTPROF_LOG
+	bootprof_log_boot("[ilitek] Update start.");
+#endif
 
 #ifdef INOCO_REDUCE_UPDATE_THREAD_DELAY
 	/**
@@ -1745,13 +1969,20 @@ static int __maybe_unused ilitek_update_thread(void *arg)
 
 	if ((error = ilitek_upgrade_firmware("ilitek.ili")) < 0 &&
 	    (error = ilitek_upgrade_firmware("ilitek.hex")) < 0 &&
-	    (error = ilitek_upgrade_firmware("ilitek.bin")) < 0)
-		tp_err("ilitek firmware upgrade failed, err %d\n", error);
-		//return error;
+	    (error = ilitek_upgrade_firmware("ilitek.bin")) < 0) {
+			tp_err("ilitek firmware upgrade failed, err %d\n", error);
+#ifdef INOCO_BOOTPROF_LOG
+			bootprof_log_boot("[ilitek] Update error.");
+#endif
+			//return error;
+		}
 
 	error = ilitek_request_input_dev();
 	if (error)
 		return (error < 0) ? error : -EFAULT;
+#ifdef INOCO_BOOTPROF_LOG
+	bootprof_log_boot("[ilitek] Update done.");
+#endif
 #endif
 
 	return 0;
@@ -1797,6 +2028,24 @@ void ilitek_suspend(void)
 	}
 
 	ts->system_suspend = true;
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	if (ts->cpu_latency_touched > 0 || ts->cpu_latency_display_on > 0) {
+		ts->last_touched_time = 0; /* clear out of mutex */
+
+		mutex_lock(&ts->cpu_latency_mutex);
+		if (ts->cpu_latency_check_time) {
+			ts->last_touched_time = 0; /* clear again in mutex */
+			cancel_delayed_work(&ts->cpu_latency_check_work); /* no sync in mutex */
+		}
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+		tp_msg("ilitek_suspend: latency released\n");
+#endif
+		ilitek_cpu_latency_request_nolock(PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		//cpu_latency_qos_update_request(&ts->pm_qos_request, PM_QOS_DEFAULT_VALUE);
+		mutex_unlock(&ts->cpu_latency_mutex);
+	}
+#endif
 }
 
 void ilitek_resume(void)
@@ -1807,6 +2056,17 @@ void ilitek_resume(void)
 		tp_msg("operation_protection or firmware_updating return\n");
 		return;
 	}
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	if (ts->cpu_latency_display_on > 0) {
+		mutex_lock(&ts->cpu_latency_mutex);
+#ifdef INOCO_CPU_LATENCY_REQUEST_DEBUG
+		tp_msg("ilitek_resume: latency display %d\n", ts->cpu_latency_display_on);
+#endif
+		ilitek_cpu_latency_request_nolock(ts->cpu_latency_display_on);
+		mutex_unlock(&ts->cpu_latency_mutex);
+	}
+#endif
 
 	if (ts->gesture_status) {
 		ilitek_irq_disable();
@@ -2319,8 +2579,11 @@ static int _ilitek_wait_ack(uint8_t cmd, unsigned int tout_ms, void *data)
 			error = 0;
 			break;
 		}
-
+#ifdef INOCO_ILITEK_MDELAY
+		usleep_range(1000, 1000);
+#else
 		udelay(1000);
+#endif
 		t_ms++;
 	} while (t_ms < tout_ms);
 
@@ -2332,7 +2595,13 @@ static int _ilitek_wait_ack(uint8_t cmd, unsigned int tout_ms, void *data)
 
 static void _ilitek_delay(unsigned int delay_ms)
 {
+
+#ifdef INOCO_ILITEK_MDELAY
+	ilitek_mdelay(delay_ms);
+#else
 	udelay(delay_ms * 1000);
+#endif
+
 }
 
 static int _ilitek_reset(unsigned int delay_ms, void *data)
@@ -2434,6 +2703,15 @@ int ilitek_main_probe(void *client, struct device *device)
 		goto err_free_irq;
 #endif
 
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	if (ts->cpu_latency_display_on > 0) {
+		tp_dbg("ilitek_main_probe: latency display %d\n", ts->cpu_latency_display_on);
+		mutex_lock(&ts->cpu_latency_mutex);
+		ilitek_cpu_latency_request_nolock(ts->cpu_latency_display_on);
+		mutex_unlock(&ts->cpu_latency_mutex);
+	}
+#endif
+
 	if ((ts->gesture_status = ILITEK_GESTURE_DEFAULT))
 		ilitek_register_gesture(ts, true);
 
@@ -2442,7 +2720,13 @@ int ilitek_main_probe(void *client, struct device *device)
 	return 0;
 
 err_free_irq:
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+	irq_set_affinity_hint(ts->irq, NULL);
+#endif
 	free_irq(ts->irq, ts);
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	//cpu_latency_qos_remove_request(&ts->pm_qos_request);
+#endif
 
 err_dev_exit:
 	ilitek_dev_exit(ts->dev);
@@ -2488,7 +2772,13 @@ int ilitek_main_remove(void *client)
 		input_unregister_device(ts->input_dev);
 
 #ifndef MTK_UNDTS
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+	irq_set_affinity_hint(ts->irq, NULL);
+#endif
 	free_irq(ts->irq, ts);
+#endif
+#ifdef INOCO_CPU_LATENCY_REQUEST
+	//cpu_latency_qos_remove_request(&ts->pm_qos_request);
 #endif
 
 	ilitek_dev_exit(ts->dev);
@@ -2500,7 +2790,6 @@ int ilitek_main_remove(void *client)
 	ilitek_power_on(false);
 	ilitek_release_regulator();
 	ilitek_free_dma();
-
 	kfree(ts);
 
 	return 0;

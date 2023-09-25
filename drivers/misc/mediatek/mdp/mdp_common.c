@@ -1832,6 +1832,7 @@ s32 cmdq_mdp_wait(struct cmdqRecStruct *handle,
 				 * so that it won't be consumed in the future
 				 */
 				list_del_init(&handle->list_entry);
+				cmdq_task_destroy(handle);
 				mutex_unlock(&mdp_task_mutex);
 				CMDQ_TRACE_FORCE_END();
 				return -ETIMEDOUT;
@@ -2576,10 +2577,13 @@ void cmdq_mdp_unmap_mmsys_VA(void)
 
 static void mdp_request_voltage(unsigned long frequency, bool is_mdp)
 {
-	int low_volt, ret = 0;
+	int low_volt = 0, ret = 0;
 	int index = 0;
 	u64 *freqs = is_mdp ? mdp_pmqos_freq : isp_pmqos_freq;
 	int *volts = is_mdp ? mdp_volts : isp_volts;
+
+	if (!freqs || !volts)
+		return;
 
 	if (!frequency) {
 		low_volt = 0;

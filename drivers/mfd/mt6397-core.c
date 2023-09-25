@@ -783,6 +783,42 @@ static int mt6397_probe(struct platform_device *pdev)
 	return ret;
 }
 
+#if 0
+/* The debug logs for the disable of PMIC RTC EOSC calibration */
+static void mt6397_shutdown(struct platform_device *pdev)
+{
+	struct mt6397_chip *pmic = platform_get_drvdata(pdev);
+	int ret;
+	unsigned int val;
+
+	/* The debug logs for the disable of PMIC RTC EOSC calibration */
+	val = 0;
+	ret = regmap_read(pmic->regmap, 0x05ac, &val);
+	if (!ret)
+		dev_info(&pdev->dev, "0x05ac=0x%x\n", val);
+	val = 0;
+	ret = regmap_read(pmic->regmap, 0x0540, &val);
+	if (!ret)
+		dev_info(&pdev->dev, "0x0540=0x%x\n", val);
+	val = 0;
+	ret = regmap_read(pmic->regmap, 0x0542, &val);
+	if (!ret)
+		dev_info(&pdev->dev, "0x0542=0x%x\n", val);
+	val = 0;
+	ret = regmap_read(pmic->regmap, 0x051a, &val);
+	if (!ret)
+		dev_info(&pdev->dev, "0x051a=0x%x\n", val);
+	val = 0;
+	ret = regmap_read(pmic->regmap, 0x0526, &val);
+	if (!ret)
+		dev_info(&pdev->dev, "0x0526=0x%x\n", val);
+	val = 0;
+	ret = regmap_read(pmic->regmap, 0x0528, &val);
+	if (!ret)
+		dev_info(&pdev->dev, "0x0528=0x%x\n", val);
+}
+#endif
+
 static const struct of_device_id mt6397_of_match[] = {
 	{
 		.compatible = "mediatek,mt6323",
@@ -816,6 +852,9 @@ MODULE_DEVICE_TABLE(platform, mt6397_id);
 
 static struct platform_driver mt6397_driver = {
 	.probe = mt6397_probe,
+#if 0
+	.shutdown = mt6397_shutdown,
+#endif
 	.driver = {
 		.name = "mt6397",
 		.of_match_table = of_match_ptr(mt6397_of_match),

@@ -4,6 +4,11 @@
  * Author: Chaotian.Jing <chaotian.jing@mediatek.com>
  */
 
+//#define ICOM_MTK_MMC_NEW_TIMEOUT
+// #define ICOM_MTK_MMC_NEW_TIMEOUT_DEBUG
+// #define ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
+// #define ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
+
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -302,7 +307,11 @@
 
 #define MTK_MMC_AUTOSUSPEND_DELAY	50
 #define CMD_TIMEOUT         (HZ/10 * 5)	/* 100ms x5 */
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+#define DAT_TIMEOUT         (HZ   * 10)	/* 1000ms x10 */
+#else
 #define DAT_TIMEOUT         (HZ    * 5)	/* 1000ms x5 */
+#endif
 
 #define DEFAULT_DEBOUNCE	(8)	/* 8 cycles CD debounce */
 
@@ -419,6 +428,11 @@ struct msdc_host {
 
 	u32 timeout_ns;		/* data timeout ns */
 	u32 timeout_clks;	/* data timeout clks */
+
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+	u32 max_busy_timeout_us;	/* max. busy detect timeout in us */
+	u64 data_timeout_ns;	/* data timeout (DTO) in ns */
+#endif
 
 	int signal_voltage; /* signalling voltage (1.8V or 3.3V) */
 	bool pins_poweron_enabled;
@@ -852,6 +866,84 @@ static void msdc_set_busy_timeout(struct msdc_host *host, u64 ns, u64 clks)
 		      (u32)(timeout > 8191 ? 8191 : timeout));
 }
 
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+static u32 msdc_max_busy_timeout_us(struct msdc_host *host)
+{
+	struct mmc_host *mmc = mmc_from_priv(host);
+	u64 timeout;
+	u32 mode = 0;
+
+	if (mmc->actual_clock == 0) {
+		timeout = 0;
+	} else {
+		timeout = 1000000ULL * 8192 * (1ULL << 20);
+		do_div(timeout, mmc->actual_clock); /* us */
+
+		if (host->dev_comp->clk_div_bits == 8)
+			sdr_get_field(host->base + MSDC_CFG,
+				      MSDC_CFG_CKMOD, &mode);
+		else
+			sdr_get_field(host->base + MSDC_CFG,
+				      MSDC_CFG_CKMOD_EXTRA, &mode);
+		/* DDR mode timeout will be in half */
+		if (mode >= 2)
+			do_div(timeout, 2);
+	}
+
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT_DEBUG
+	dev_info(host->dev, "max busy timeout: %llu us (mode=%u, actual_clock=%u)\n",
+			timeout, mode, mmc->actual_clock);
+#endif
+
+	return (u32)timeout;
+}
+
+static void msdc_set_data_timeout(struct msdc_host *host, u64 timeout_ns)
+{
+	struct mmc_host *mmc = mmc_from_priv(host);
+	u64 count;
+
+	host->timeout_ns = timeout_ns;
+	host->timeout_clks = 0;
+
+	if (mmc->actual_clock == 0) {
+		count = 0;
+	} else {
+		/* Refer to msdc_timeout_cal() */
+		u32 mode = 0;
+		u64 clk_ns = 1000000000ULL;
+
+		do_div(clk_ns, mmc->actual_clock);
+		count = timeout_ns + clk_ns - 1;
+		do_div(count, clk_ns);
+
+		/* in 1048576 sclk cycle unit */
+		count = DIV_ROUND_UP(count, (0x1 << 20));
+
+		if (host->dev_comp->clk_div_bits == 8)
+			sdr_get_field(host->base + MSDC_CFG,
+				      MSDC_CFG_CKMOD, &mode);
+		else
+			sdr_get_field(host->base + MSDC_CFG,
+				      MSDC_CFG_CKMOD_EXTRA, &mode);
+		/* DDR mode will double the clk cycles for data timeout */
+		count = mode >= 2 ? count * 2 : count;
+		count = count > 1 ? count - 1 : 0;
+	}
+
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT_DEBUG
+	dev_info(host->dev, "set data timeout: %llu us (%u)\n", timeout_ns / 1000, (u32)count);
+#endif
+
+	/* read data timeout */
+	sdr_set_field(host->base + SDC_CFG, SDC_CFG_DTOC,
+		      (u32)(count > 255 ? 255 : count));
+	/* write data / busy timeout */
+	sdr_set_field(host->base + SDC_CFG, SDC_CFG_WRDTOC,
+		      (u32)(count > 8191 ? 8191 : count));
+}
+#endif
+
 static void msdc_gate_clock(struct msdc_host *host)
 {
 	if (host->src_clk_cg)
@@ -980,6 +1072,10 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 	host->mclk = hz;
 	host->timing = timing;
 	/* need because clk changed. */
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+	host->max_busy_timeout_us = msdc_max_busy_timeout_us(host);
+	// msdc_set_data_timeout(host, host->data_timeout_ns);
+#endif
 	msdc_set_timeout(host, host->timeout_ns, host->timeout_clks);
 	sdr_set_bits(host->base + MSDC_INTEN, flags);
 
@@ -1095,10 +1191,14 @@ static inline u32 msdc_cmd_prepare_raw_cmd(struct msdc_host *host,
 		/* Always use dma mode */
 		sdr_clr_bits(host->base + MSDC_CFG, MSDC_CFG_PIO);
 
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+		/* Use msdc_set_data_timeout() instead */
+#else
 		if (host->timeout_ns != data->timeout_ns ||
 		    host->timeout_clks != data->timeout_clks)
 			msdc_set_timeout(host, data->timeout_ns,
 					data->timeout_clks);
+#endif
 
 		writel(data->blocks, host->base + SDC_BLK_NUM);
 	}
@@ -1114,7 +1214,11 @@ static void msdc_start_data(struct msdc_host *host, struct mmc_request *mrq,
 	host->data = data;
 	read = data->flags & MMC_DATA_READ;
 
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+	/* msdc_start_command() */
+#else
 	mod_delayed_work(system_wq, &host->req_timeout, DAT_TIMEOUT);
+#endif
 	msdc_dma_setup(host, &host->dma, data);
 	sdr_set_bits(host->base + MSDC_INTEN, data_ints_mask);
 	sdr_set_field(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_START, 1);
@@ -1239,6 +1343,9 @@ static bool msdc_cmd_done(struct msdc_host *host, int events,
 	rsp = cmd->resp;
 
 	sdr_clr_bits(host->base + MSDC_INTEN, cmd_ints_mask);
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+	sdr_clr_bits(host->base + MSDC_PATCH_BIT1, MSDC_PB1_BUSY_CHECK_SEL);
+#endif
 
 	if (cmd->flags & MMC_RSP_PRESENT) {
 		if (cmd->flags & MMC_RSP_136) {
@@ -1272,10 +1379,17 @@ static bool msdc_cmd_done(struct msdc_host *host, int events,
 	if (cmd->error &&
 		cmd->opcode != MMC_SEND_TUNING_BLOCK &&
 		cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200)
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
 		dev_dbg(host->dev,
-				"%s: cmd=%d arg=%08X; rsp %08X; cmd_error=%d\n",
+				"%s: cmd=%d arg=%08X; rsp %08X; cmd_error=%d; events=%08x; dto_ns=%llu\n",
 				__func__, cmd->opcode, cmd->arg, rsp[0],
-				cmd->error);
+				cmd->error, events, host->data_timeout_ns);
+#else
+		dev_dbg(host->dev,
+				"%s: cmd=%d arg=%08X; rsp %08X; cmd_error=%d; events=%08x\n",
+				__func__, cmd->opcode, cmd->arg, rsp[0],
+				cmd->error, events);
+#endif
 
 	msdc_cmd_next(host, mrq, cmd);
 	return true;
@@ -1315,11 +1429,113 @@ static inline bool msdc_cmd_is_ready(struct msdc_host *host,
 	return true;
 }
 
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+/* Refer to sdhci_target_timeout() */
+static u64 msdc_target_timeout(struct msdc_host *host,
+		 struct mmc_command *cmd, struct mmc_data *data)
+{
+	//struct mmc_host *mmc = mmc_from_priv(host);
+	u64 target_timeout;
+
+	/* timeout in us */
+	if (!data) {
+		if (!cmd)
+			target_timeout = host->max_busy_timeout_us;
+		else if (cmd->busy_timeout)
+			target_timeout = 1000ULL * cmd->busy_timeout;
+		else if (cmd->flags & MMC_RSP_BUSY)
+			target_timeout = host->max_busy_timeout_us;
+		else
+			target_timeout = 500000ULL; /* 500ms */
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
+		dev_info(host->dev, "target cmd timeout: %llu us\n", target_timeout);
+#endif
+	} else {
+		target_timeout = DIV_ROUND_UP(data->timeout_ns, 1000);
+		/* Refer to mmc_set_data_timeout() */
+		if (host->mclk && data->timeout_clks) {
+			u64 val;
+
+			/*
+			 * data->timeout_clks is in units of clock cycles.
+			 * host->clock is in Hz.  target_timeout is in us.
+			 * Hence, us = 1000000 * cycles / Hz.  Round up.
+			 */
+			val = 1000000ULL * data->timeout_clks + host->mclk - 1;
+			do_div(val, host->mclk);
+			target_timeout += val;
+		}
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
+		dev_info(host->dev, "target data timeout: %llu us (#=%u)\n", target_timeout, data->blocks);
+#endif
+	}
+
+	return target_timeout;
+}
+
+/* Refer to sdhci_calc_timeout() & sdhci_calc_sw_timeout() */
+static void msdc_calc_timeout(struct msdc_host *host,
+		struct mmc_command *cmd)
+{
+	struct mmc_data *data = cmd->data;
+	u64 target_timeout;
+
+	target_timeout = msdc_target_timeout(host, cmd, data); /* us */
+	target_timeout *= NSEC_PER_USEC; /* ns */
+
+	if (data) {
+#if 0
+		struct mmc_host *mmc = mmc_from_priv(host);
+		struct mmc_ios *ios = &mmc->ios;
+		unsigned char bus_width = 1 << ios->bus_width;
+		unsigned int blksz = data->blksz;
+		unsigned int freq = mmc->actual_clock ? : host->mclk;
+		u64 transfer_time = (u64)blksz * NSEC_PER_SEC * (8 / bus_width);
+
+		do_div(transfer_time, freq);
+		/* multiply by '2' to account for any unknowns */
+		transfer_time = transfer_time * 2;
+
+		/* calculate timeout for the entire data */
+		host->data_timeout_ns = target_timeout * data->blocks +
+				     transfer_time;
+
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
+		dev_info(host->dev, "calc data timeout: %u us (nr=%u) (transfer: %u ns)\n",
+				host->data_timeout_ns / 1000, data->blocks, transfer_time);
+#endif
+#else
+		/* add more time below to skip transfer_time calculation */
+		/* calculate timeout for the entire data */
+		host->data_timeout_ns = target_timeout * data->blocks;
+
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
+		dev_info(host->dev, "data timeout: %u us (#=%u)\n",
+				host->data_timeout_ns / 1000, data->blocks);
+#endif
+#endif
+	} else {
+		host->data_timeout_ns = target_timeout;
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
+		dev_info(host->dev, "calc cmd data timeout: %u us\n",
+				host->data_timeout_ns / 1000);
+#endif
+	}
+
+	if (host->data_timeout_ns)
+		host->data_timeout_ns += (500 * NSEC_PER_MSEC); /* more time */
+}
+#endif
+
 static void msdc_start_command(struct msdc_host *host,
 		struct mmc_request *mrq, struct mmc_command *cmd)
 {
 	u32 rawcmd;
 	unsigned long flags;
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+	u64 data_timeout_ns;
+	unsigned long sw_timeout_jiffies;
+#endif
 
 	WARN_ON(host->cmd);
 	host->cmd = cmd;
@@ -1338,6 +1554,23 @@ static void msdc_start_command(struct msdc_host *host,
 	rawcmd = msdc_cmd_prepare_raw_cmd(host, mrq, cmd);
 
 	spin_lock_irqsave(&host->lock, flags);
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+	data_timeout_ns = host->data_timeout_ns;
+	msdc_calc_timeout(host, cmd);
+	if (data_timeout_ns != host->data_timeout_ns)
+		msdc_set_data_timeout(host, host->data_timeout_ns);
+
+	if (host->data_timeout_ns)
+		sw_timeout_jiffies = nsecs_to_jiffies(host->data_timeout_ns) + HZ;
+	else if (!cmd->data)
+		sw_timeout_jiffies = CMD_TIMEOUT + (HZ >> 1)/*~500ms*/;
+	else
+		sw_timeout_jiffies = DAT_TIMEOUT;
+	mod_delayed_work(system_wq, &host->req_timeout, sw_timeout_jiffies);
+
+	if (cmd->flags & MMC_RSP_BUSY)
+		sdr_set_bits(host->base + MSDC_PATCH_BIT1, MSDC_PB1_BUSY_CHECK_SEL);
+#endif
 	sdr_set_bits(host->base + MSDC_INTEN, cmd_ints_mask);
 	spin_unlock_irqrestore(&host->lock, flags);
 
@@ -1478,10 +1711,26 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 				data->error = -EILSEQ;
 			if (mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK &&
 			    mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200) {
-				dev_dbg(host->dev, "%s: cmd=%d; blocks=%d",
-					__func__, mrq->cmd->opcode, data->blocks);
-				dev_dbg(host->dev, "data_error=%d xfer_size=%d\n",
-					(int)data->error, data->bytes_xfered);
+				if (mrq && mrq->cmd)
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+					dev_dbg(host->dev, "%s: cmd=%d flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_us=%llu",
+							__func__, mrq->cmd->opcode, data->flags, data->blocks,
+							data->error, data->bytes_xfered, host->data_timeout_ns / 1000);
+#else
+					dev_dbg(host->dev, "%s: cmd=%d flags=0x%x blocks=%u data_error=%d xfer_size=%d",
+							__func__, mrq->cmd->opcode, data->flags, data->blocks,
+							data->error, data->bytes_xfered);
+#endif
+				else
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+					dev_dbg(host->dev, "%s: flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_us=%llu",
+							__func__, data->flags, data->blocks,
+							data->error, data->bytes_xfered, host->data_timeout_ns / 1000);
+#else
+					dev_dbg(host->dev, "%s: flags=0x%x blocks=%u data_error=%d xfer_size=%d",
+							__func__, data->flags, data->blocks,
+							data->error, data->bytes_xfered);
+#endif
 			}
 		}
 
@@ -3002,15 +3251,28 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		mmc->max_seg_size = 64 * 1024;
 	}
 
+{
+	u32 cpu = 0;
+	if (of_property_read_u32(pdev->dev.of_node, "affinity-hint-cpu", &cpu) == 0)
+		ret = irq_set_affinity_hint(host->irq, get_cpu_mask(cpu));
+	else if (!(mmc->caps2 & MMC_CAP2_NO_SDIO))
+		ret = irq_set_affinity_hint(host->irq, get_cpu_mask(2));
+	else
+		ret = irq_set_affinity_hint(host->irq, get_cpu_mask(3));
+	if (ret)
+		dev_warn(host->dev, "set irq affinity hint err %d\n", ret);
+}
 	ret = devm_request_irq(&pdev->dev, host->irq, msdc_irq,
 			       IRQF_TRIGGER_NONE, pdev->name, host);
 	if (ret)
 		goto release;
 
+#if 0 /* Moved before devm_request_irq() */
 	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO))
 		irq_set_affinity_hint(host->irq, get_cpu_mask(2));
 	else
 		irq_set_affinity_hint(host->irq, get_cpu_mask(3));
+#endif
 
 	/* Support for SDIO eint irq ? */
 	if (host->sdio_eint_ready) {
@@ -3042,6 +3304,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 end:
 	pm_runtime_disable(host->dev);
 release:
+	irq_set_affinity_hint(host->irq, NULL);
 	platform_set_drvdata(pdev, NULL);
 	msdc_deinit_hw(host);
 	msdc_gate_clock(host);
@@ -3071,6 +3334,7 @@ static int msdc_drv_remove(struct platform_device *pdev)
 
 	pm_runtime_get_sync(host->dev);
 
+	irq_set_affinity_hint(host->irq, NULL);
 	platform_set_drvdata(pdev, NULL);
 	mmc_remove_host(mmc);
 	msdc_deinit_hw(host);

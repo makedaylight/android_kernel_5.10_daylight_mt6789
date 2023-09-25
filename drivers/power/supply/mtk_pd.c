@@ -63,6 +63,8 @@
 static int pd_dbg_level = PD_DEBUG_LEVEL;
 #define PD_VBUS_IR_DROP_THRESHOLD 1200
 
+/* get hw_rev (1-8) from device tree <&chosen> */
+static u32 hw_rev = (u32) -1;
 
 int pd_get_debug_level(void)
 {
@@ -1044,6 +1046,11 @@ static int pd_full_evt(struct chg_alg_device *alg)
 					pd->state = PD_POSTCC;
 					pd_hal_enable_charger(alg,
 						CHG2, false);
+
+					/* workaround to avoid CHG1 EOC immediately */
+					pd_hal_enable_charger(alg, CHG1, false);
+					pd_hal_enable_charger(alg, CHG1, true);
+
 					pd_hal_set_eoc_current(alg,
 						CHG1, /*150000*/ pd->postcc_ieoc);
 					pd_hal_enable_termination(alg,
@@ -1144,7 +1151,7 @@ static int _pd_notifier_call(struct chg_alg_device *alg,
 static void mtk_pd_parse_dt(struct mtk_pd *pd,
 				struct device *dev)
 {
-	struct device_node *np = dev->of_node;
+	struct device_node *np = dev->of_node, *boot_np;
 	u32 val = 0;
 
 	if (of_property_read_u32(np, "min_charger_voltage", &val) >= 0)
@@ -1258,6 +1265,24 @@ static void mtk_pd_parse_dt(struct mtk_pd *pd,
 		pd_err("use default postcc_ieoc :%d\n", 150000);
 		pd->postcc_ieoc = 150000;
 	}
+
+	/* innocomm jagar evt2 eoc workaround */
+	boot_np = of_parse_phandle(np, "boot_mode", 0);
+	if (boot_np) {
+		if (of_property_read_u32(boot_np, "hw_rev", &hw_rev) < 0) //from <&chosen>
+			dev_err(dev, "failed to get hw_rev\n");
+		if (of_property_read_bool(boot_np, "jagar_evt2_eoc_workaround")) { //from <&chosen>
+			dev_notice(dev, "Jagar EVT2 EOC workaround is enable, hw_rev=%d.\n", hw_rev);
+			if (hw_rev == 2) {
+				dev_notice(dev, "Apply Jagar EVT2 EOC workaround!\n");
+				dev_notice(dev, "Original postcc_ieoc=%d\n", pd->postcc_ieoc);
+				//Change postcc_ieoc to 100mA
+				pd->postcc_ieoc = 100000;
+				dev_notice(dev, "EVT2 postcc_ieoc=%d\n", pd->postcc_ieoc);
+			}
+		}
+	} else
+		dev_err(dev, "failed to get boot_mode phandle\n");
 
 	if (of_property_read_u32(np, "vbat_threshold", &val) >= 0)
 		pd->vbat_threshold = val;

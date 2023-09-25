@@ -71,6 +71,16 @@ struct tag_bootmode {
 	u32 boottype;
 };
 
+#ifdef INOCO_PCBA_BUILD
+//com.innocomm.runinreliabilitytest; TASK_COMM_LEN = 16
+const char process_name[TASK_COMM_LEN] = "reliabilitytest";
+
+#define RUN_IN_BAT_LV_H	60	//battery capacity <=60%
+#define RUN_IN_BAT_LV_L	55	//battery capacity >=55%
+
+static int mtk_charger_enable_power_path(struct mtk_charger *info, int idx, bool en);
+#endif
+
 #ifdef MODULE
 static char __chg_cmdline[COMMAND_LINE_SIZE];
 static char *chg_cmdline = __chg_cmdline;
@@ -2132,6 +2142,10 @@ static void charger_check_status(struct mtk_charger *info)
 	int temperature;
 	struct battery_thermal_protection_data *thermal;
 	int uisoc = 0;
+#ifdef INOCO_PCBA_BUILD
+	struct task_struct *task;
+	bool found = false;
+#endif
 
 	if (get_charger_type(info) == POWER_SUPPLY_TYPE_UNKNOWN)
 		return;
@@ -2139,6 +2153,41 @@ static void charger_check_status(struct mtk_charger *info)
 	temperature = info->battery_temp;
 	thermal = &info->thermal;
 	uisoc = get_uisoc(info);
+
+#ifdef INOCO_PCBA_BUILD
+	for_each_process(task) {
+		//pr_info("%s: task: %s\n", __func__, task->comm);
+		if (strncmp(process_name, task->comm, TASK_COMM_LEN) == 0)
+			found = true;
+	}
+
+	if (found) {
+		pr_info("%s: [PCBA Run-In] battery level=%d \n", __func__, uisoc);
+		if (uisoc >= RUN_IN_BAT_LV_H) {
+			//disable power path (Jagar only supports power path on CHG1.)
+			mtk_charger_enable_power_path(info, CHG1_SETTING, false);
+			//stop charging -> discharging (with power path disabled)
+			charging = false;
+			goto stop_charging;
+		} else if (uisoc <= RUN_IN_BAT_LV_L) {
+			//enable power path (Jagar only supports power path on CHG1.)
+			mtk_charger_enable_power_path(info, CHG1_SETTING, true);
+			//charging -> follow the original path
+			charging = true;
+		} else { //between RUN_IN_BAT_LV_H and RUN_IN_BAT_LV_L
+			//charging -> keep charging or discharging -> keep discharging
+			//power path on -> keep it turned on or power path off -> keep it turned off
+			if (info->can_charging == false) {
+				mtk_charger_enable_power_path(info, CHG1_SETTING, false);
+				charging = false;
+			} else {
+				mtk_charger_enable_power_path(info, CHG1_SETTING, true);
+				charging = true;
+			}
+			//mtk_charger_plug_in will reset info->can_charging to true.
+		}
+	}
+#endif
 
 	info->setting.vbat_mon_en = true;
 	if (info->enable_sw_jeita == true || info->enable_vbat_mon != true ||

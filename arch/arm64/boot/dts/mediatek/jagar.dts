@@ -21,14 +21,6 @@ ROOT_NODE {
 	gpio_keys: gpio-keys {
 		compatible = "gpio-keys";
 		//pinctrl-names = "default";
-
-		lid {
-			label = "Lid";
-			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
-			linux,code = <SW_LID>;
-			linux,input-type = <EV_SW>;
-			wakeup-source; /*gpio-key,wakeup;*/
-		};
 	};
 	pogo5v: regulator_pogo5v {
 		compatible = "regulator-fixed";
@@ -41,6 +33,27 @@ ROOT_NODE {
 };
 
 &chosen {
+#if 0
+	bootargs = "console=tty0 root=/dev/ram \
+		    loglevel=8 \
+		    8250.nr_uarts=4 \
+		    androidboot.hardware=mt6789 \
+		    initcall_debug=1 transparent_hugepage=never \
+		    vmalloc=400M swiotlb=noforce \
+		    firmware_class.path=/vendor/firmware pelt=8\
+		    loop.max_part=7";
+#else
+	/* REMOVED: initcall_debug=1 */
+	bootargs = "console=tty0 root=/dev/ram \
+		    loglevel=8 \
+		    8250.nr_uarts=4 \
+		    androidboot.hardware=mt6789 \
+		    transparent_hugepage=never \
+		    vmalloc=400M swiotlb=noforce \
+		    firmware_class.path=/vendor/firmware pelt=8\
+		    loop.max_part=7";
+#endif
+	jagar_evt2_eoc_workaround; //change ieoc=100mA, eoc_time=30mins for EVT2 only
 };
 
 &android {
@@ -272,10 +285,13 @@ ROOT_NODE {
 		reset-gpios = <&pio 85 0>;
 		vpos-supply = <&bias_vpos>;
 		vneg-supply = <&bias_vneg>;
-		sample-id1 = <0>;
-		sample-id2 = <0>;
-		sample-id3 = <0>;
-		islcmfound = <0>;
+		/* [VTS] FirmwareDtboVerification
+		 * If the value will be modified in LK, do not set the default value in dts
+		 */
+		// sample-id1 = <0>;
+		// sample-id2 = <0>;
+		// sample-id3 = <0>;
+		// islcmfound = <0>;
 		port {
 			panel_in1: endpoint {
 				remote-endpoint = <&dsi_out>;
@@ -329,7 +345,7 @@ ROOT_NODE {
 		pins_cmd_dat { /* I2C >400KHz */
 			pinmux = <PINMUX_GPIO130__FUNC_SCL0>,
 				<PINMUX_GPIO131__FUNC_SDA0>;
-			bias-pull-up = <MTK_PULL_SET_RSEL_110>;
+			bias-pull-up = <MTK_PULL_SET_RSEL_111>;
 			mediatek,drive-strength-adv = <7>; //EH: 1/3/5/7(max)
 		};
 		pins_irq {
@@ -362,6 +378,9 @@ ROOT_NODE {
 &i2c0 {
 	status = "okay";
 	clock-frequency = <1000000>; /* 904348->904347; 800000 */
+	// affinity-hint-cpu = <5>;
+	// mutex-lock-ops;
+
 	ilitek@41 {
 		compatible = "tchip,ilitek";
 		pinctrl-names = "default", "active", "sleep";
@@ -373,6 +392,14 @@ ROOT_NODE {
 		ilitek,irq-gpio = <&pio 12 GPIO_ACTIVE_HIGH>;
 		interrupt-parent = <&pio>;
 		interrupts = <12 IRQ_TYPE_EDGE_FALLING>;
+
+		affinity-hint-cpu = <5>;
+		/* affinity-hint-cpu must be configured for cpu-latency */
+		cpu-latency-display-on = <0>; // <3000> <1000> /* usecs */
+		cpu-latency-touched = <200>; /* usecs */
+		/* If no touch event, the touched latency release time is between check-time and 2*check-time */
+		cpu-latency-check-time = <5000>;
+
 		ilitek,vdd = "vdd";
 		vdd-supply = <&vctp3v3>;
 		//wakeup-source;
@@ -539,6 +566,9 @@ ROOT_NODE {
 &i2c9 {
 	status = "okay";
 	clock-frequency = <1000000>; /* 904348->904347; 800000 */
+	// affinity-hint-cpu = <4>;
+	// mutex-lock-ops;
+
 #if 0
 	i2c-hid-dev@09 {
 		compatible = "hid-over-i2c";
@@ -567,6 +597,14 @@ ROOT_NODE {
 		pinctrl-2 = <&wacom_sleep>;
 		interrupt-parent = <&pio>;
 		interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
+
+		affinity-hint-cpu = <4>;
+		/* affinity-hint-cpu must be configured for cpu-latency */
+		cpu-latency-display-on = <0>; // <3000> <1000> /* usecs */
+		cpu-latency-touched = <200>; /* usecs */
+		/* If no touch event, the touched latency release time is between check-time and 2*check-time */
+		cpu-latency-check-time = <5000>;
+
 		vdd-supply = <&wacom1v8>;
 		vddl-supply = <&wacom3v3>;
 		post-power-on-delay-ms = <110>; /* >100ms because wacom init time: 100ms(max) */
@@ -731,6 +769,8 @@ ROOT_NODE {
 
 	dvfsrc-vcore-supply = <&dvfsrc_vcore>;
 	req-vcore = <650000>;
+
+	affinity-hint-cpu = <1>;
 };
 /* Micro SD Card: end */
 
@@ -937,6 +977,8 @@ ROOT_NODE {
 
 	/* The runtime autosuspend works if SDIO async IRQ is enabled. */
 	//autosuspend-delay = <50>; /* The default value is 50ms. */
+
+	affinity-hint-cpu = <2>;
 };
 /* SDIO/WLAN/BT: end */
 
@@ -947,6 +989,11 @@ ROOT_NODE {
 	 *    via ARM arch_sys_counter (clocksource_counter) (drivers/clocksource/arm_arch_timer.c).
 	 */
 	arm,no-tick-in-suspend;
+};
+
+&mt6358rtc {
+	/* Disable MTK PMIC EOSC Calibration Mode */
+	disable-eosc-cali;
 };
 
 &i2c8 {
@@ -1117,7 +1164,18 @@ ROOT_NODE {
 		reg = <0x55>;
 		//monitored-battery = <&bat>; //bq78z100 doesn't support dm_regs
 		charger = <&mt6375_chg>;
+		io-channels = <&auxadc 3>; //adc 2 will be change to adc 3 on new board
+		io-channel-names = "version-channel";
+		version-lookup-table = <
+			52  1
+			312 2
+			615 3
+			905 4>;
 	};
+};
+
+&md_auxadc {
+	status = "disabled";
 };
 
 &mtk_gauge {
@@ -1152,10 +1210,12 @@ ROOT_NODE {
 	dcs_chg2_charger_current = <2000000>; //2A
 
 	/* dual charger */
-	dual_polling_ieoc = <450000>;
-	postcc_ieoc = <250000>;
+	dual_polling_ieoc = <450000>; //100-800mA
+	postcc_ieoc = <150000>; //postcc -> single charger termination current, 100-800mA
 	slave_mivr_diff = <100000>;
 	vbat_threshold = <4150>;
+
+	boot_mode = <&chosen>;
 };
 
 &pe4 {
@@ -1250,7 +1310,11 @@ ROOT_NODE {
 
 &mt6375_chg {
 	//vbus_ov = <14500>; //with dual charger RT9471, we may change it to <= 13500mV or 14000mV.
-	ieoc = <250>; //mt6375 (single charger) termination current: 150 -> 250 mA
+	ieoc = <150>; //mt6375 single charger termination current, 100-800mA
+	//ieoc = <100>
+	//eoc_time = <30>; //0/15/30/45 mins
+
+	//ieoc_deg = <2048>; //ieoc deglitch time: 2, 256 (default), 1024, 2048ms
 
 	//chg_tmr = <10>; //change safety timer to 20/15/10/5 hrs if needed
 	//chg_tmr_en;

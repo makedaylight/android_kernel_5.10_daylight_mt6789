@@ -12,9 +12,10 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
+#include "../core/queue.h"
 
 #define MMC_SWCQ_DEBUG  0
-#define SWCQ_TUNING_CMD 1
+#define SWCQ_TUNING_CMD 0
 #define NUM_SLOTS 32
 
 #ifdef CONFIG_MMC_CRYPTO
@@ -149,7 +150,8 @@ struct swcq_host_ops {
 	void (*dump_info)(struct mmc_host *host);
 	void (*err_handle)(struct mmc_host *host);
 	void (*prepare_tuning)(struct mmc_host *host);
-
+	void (*enable)(struct mmc_host *host, struct mmc_card *card);
+	void (*disable)(struct mmc_host *host);
 };
 
 struct swcq_host {
@@ -171,6 +173,7 @@ struct swcq_host {
 	wait_queue_head_t wait_dat_trans;
 	struct mmc_request *mrq[NUM_SLOTS];
 	const struct swcq_host_ops *ops;
+	bool recovery_in_progress;
 #ifdef CONFIG_MMC_CRYPTO
 	union swcqhci_crypto_capabilities crypto_capabilities;
 	union swcqhci_crypto_cap_entry *crypto_cap_array;

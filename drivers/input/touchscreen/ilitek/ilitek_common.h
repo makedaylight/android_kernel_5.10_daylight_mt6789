@@ -26,6 +26,9 @@
 /* Includes of headers ------------------------------------------------------*/
 #include <linux/sched.h>
 #include <linux/firmware.h>
+#include <linux/pm_qos.h>
+#include <linux/cpu.h>
+#include <linux/workqueue.h>
 
 #include "ilitek_ts.h"
 #include "ilitek_protocol.h"
@@ -161,11 +164,36 @@ struct ilitek_touch_info {
 };
 
 struct ilitek_ts_data {
+#ifdef INOCO_I2C_READ_BUFF_DMA_SAFE
+	uint8_t buf[512]; /* start address is DMA aligned */
+#endif
+
+#ifdef INOCO_SET_AFFINITY_HINT_CPU
+	u32 affinity_hint_cpu;
+#endif
+
+#ifdef INOCO_CPU_LATENCY_REQUEST
+#ifndef INOCO_SET_AFFINITY_HINT_CPU
+#error "Must define INOCO_SET_AFFINITY_HINT_CPU for INOCO_CPU_LATENCY_REQUEST"
+#endif
+	struct device *cpu_dev;
+	//struct pm_qos_request pm_qos_request;
+	struct mutex cpu_latency_mutex;
+	s32 cpu_latency_display_on;
+	s32 cpu_latency_touched;
+
+	u32 cpu_latency_check_time; /* jiffies */
+	struct delayed_work cpu_latency_check_work;
+	u64 last_touched_time; /* jiffies_64 */
+#endif
+
 	void *client;
 	struct device *device;
 	struct ilitek_ts_device *dev;
 
-	uint8_t buf[512];
+#ifndef INOCO_I2C_READ_BUFF_DMA_SAFE
+	uint8_t buf[512]; /* start address is not DMA aligned */
+#endif
 
 	int (*process_and_report)(void);
 

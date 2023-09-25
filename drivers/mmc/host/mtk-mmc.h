@@ -7,6 +7,11 @@
 #ifndef _MTK_MMC_H_
 #define _MTK_MMC_H_
 
+#define ICOM_MTK_MMC_NEW_TIMEOUT
+// #define ICOM_MTK_MMC_NEW_TIMEOUT_DEBUG
+// #define ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
+// #define ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
+
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -481,7 +486,11 @@
 
 #define MTK_MMC_AUTOSUSPEND_DELAY	50
 #define CMD_TIMEOUT         (HZ/10 * 5)	/* 100ms x5 */
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+#define DAT_TIMEOUT         (HZ   * 10)	/* 1000ms x10 */
+#else
 #define DAT_TIMEOUT         (HZ    * 5)	/* 1000ms x5 */
+#endif
 
 #define DEFAULT_DEBOUNCE	(8)	/* 8 cycles CD debounce */
 #define PAD_DELAY_MAX		32	/* PAD delay cells */
@@ -600,6 +609,7 @@ struct mtk_mmc_compatible {
 #define MSDC_NEW_RX_V2		(2)
 #define support_new_rx(x)	((x) != 0)
 	bool set_crypto_enable_in_sw;
+	u32 autok_ver;
 };
 
 struct msdc_tune_para {
@@ -644,6 +654,11 @@ struct msdc_host {
 	u32 timeout_ns;		/* data timeout ns */
 	u32 timeout_clks;	/* data timeout clks */
 
+#ifdef ICOM_MTK_MMC_NEW_TIMEOUT
+	u32 max_busy_timeout_us;	/* max. busy detect timeout in us */
+	u64 data_timeout_ns;	/* data timeout (DTO) in ns */
+#endif
+
 #if 0
 	int pins_state; /* pins state */
 #define PINS_DEFAULT 0
@@ -663,6 +678,10 @@ struct msdc_host {
 #endif
 	struct pinctrl_state *pins_uhs;
 	struct pinctrl_state *pins_pull_down;
+#if IS_ENABLED(CONFIG_MMC_DEBUG)
+	int dump_gpio_start; /* gpio start num */
+	int dump_gpio_end; /* gpio end num */
+#endif
 	struct delayed_work req_timeout;
 	int irq;		/* host interrupt */
 	int eint_irq;	        /* device interrupt */
@@ -702,7 +721,9 @@ struct msdc_host {
 	int	id;		/* host id */
 	bool tuning_in_progress;
 	u32 need_tune;
+	int autok_vcore; /* vcore value when executing autok */
 	bool is_autok_done;
+	bool is_skip_hs200_tune;
 	int autok_error;
 	u32 tune_latch_ck_cnt;
 	u8 autok_res[AUTOK_VCORE_NUM+1][TUNING_PARA_SCAN_COUNT];

@@ -440,6 +440,26 @@ static void mtk_eint_irq_release_resources(struct irq_data *d)
 	gpiochip_unlock_as_irq(gpio_c, gpio_n);
 }
 
+#ifdef CONFIG_SMP
+static int mtk_eint_irq_set_affinity(struct irq_data *d,
+				 const struct cpumask *dest, bool force)
+{
+	// struct mtk_eint *eint = irq_data_get_irq_chip_data(d);
+	struct cpumask tmask;
+
+	if (!cpumask_and(&tmask, dest, cpu_online_mask))
+		return -EINVAL;
+
+	// dev_info(eint->dev, "%s eint_num %d\n", __func__, d->hwirq);
+
+	irq_data_update_effective_affinity(d, &tmask);
+
+	return IRQ_SET_MASK_OK;
+}
+#else
+#define mtk_eint_irq_set_affinity NULL
+#endif
+
 static struct irq_chip mtk_eint_irq_chip = {
 	.name = "mtk-eint",
 	.irq_disable = mtk_eint_mask,
@@ -450,6 +470,7 @@ static struct irq_chip mtk_eint_irq_chip = {
 	.irq_set_wake = mtk_eint_irq_set_wake,
 	.irq_request_resources = mtk_eint_irq_request_resources,
 	.irq_release_resources = mtk_eint_irq_release_resources,
+	.irq_set_affinity = mtk_eint_irq_set_affinity,
 };
 
 /*

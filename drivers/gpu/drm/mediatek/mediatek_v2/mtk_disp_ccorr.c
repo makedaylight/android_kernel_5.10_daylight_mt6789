@@ -1247,6 +1247,8 @@ static void mtk_ccorr_config(struct mtk_ddp_comp *comp,
 	 *     .7152f => RoundDown(0.7152 * 2048 + 0.5)=RoundDown(1465.2296)=1465=0x05b9
 	 *     .0722f => RoundDown(0.0722 * 2048 + 0.5)=RoundDown(148.3656)=148=0x0094
 	 *
+	 * Sanity check: 435+1465+148=2048 => OK
+	 *
 	 * coef[0][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
 	 * coef[1][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
 	 * coef[2][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
@@ -1259,9 +1261,14 @@ static void mtk_ccorr_config(struct mtk_ddp_comp *comp,
 	 *     .587f => RoundDown(0.587 * 2048 + 0.5)=RoundDown(1202.676)=1202=0x04b2
 	 *     .114f => RoundDown(0.114 * 2048 + 0.5)=RoundDown(233.972)=233=0x00e9
 	 *
-	 * coef[0][0-2] = {612, 1202, 233} -> {0x0264, 0x04b2, 0x00e9}
-	 * coef[1][0-2] = {612, 1202, 233} -> {0x0264, 0x04b2, 0x00e9}
-	 * coef[2][0-2] = {612, 1202, 233} -> {0x0264, 0x04b2, 0x00e9}
+	 * Sanity check: 612+1202+233=2047 => FAILED
+	 *     Review the Int value again:
+	 *          NEW: 612+1202+234=2048 => OK
+	 *     .114f => RoundDown(0.114 * 2048 + 0.5)=RoundDown(233.972)=233 => 233+1=234=0x00ea
+	 *
+	 * coef[0][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
+	 * coef[1][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
+	 * coef[2][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
 	 */
 	/* g_ccorr_8bit_switch=0; g_disp_ccorr_without_gamma=0 */
 	cmdq_pkt_write(handle, comp->cmdq_base,
@@ -1283,13 +1290,13 @@ static void mtk_ccorr_config(struct mtk_ddp_comp *comp,
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		comp->regs_pa + CCORR_REG(0), 0x026404b2, ~0);
 	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(1), 0x00e90264, ~0);
+		comp->regs_pa + CCORR_REG(1), 0x00ea0264, ~0);
 	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(2), 0x04b200e9, ~0);
+		comp->regs_pa + CCORR_REG(2), 0x04b200ea, ~0);
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		comp->regs_pa + CCORR_REG(3), 0x026404b2, ~0);
 	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(4), 0x00e90000, ~0);
+		comp->regs_pa + CCORR_REG(4), 0x00ea0000, ~0);
 #endif
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_0, 0 /*(0x1 << 31)*/, ~0);

@@ -985,7 +985,7 @@ static int drms_uA_update(struct regulator_dev *rdev)
 		/* get input voltage */
 		input_uV = 0;
 		if (rdev->supply)
-			input_uV = regulator_get_voltage(rdev->supply);
+			input_uV = regulator_get_voltage_rdev(rdev->supply->rdev);
 		if (input_uV <= 0)
 			input_uV = rdev->constraints->input_uV;
 		if (input_uV <= 0) {
@@ -1433,7 +1433,13 @@ static int set_machine_constraints(struct regulator_dev *rdev)
 		if (rdev->supply_name && !rdev->supply)
 			return -EPROBE_DEFER;
 
-		if (rdev->supply) {
+		/* If supplying regulator has already been enabled,
+		 * it's not intended to have use_count increment
+		 * when rdev is only boot-on.
+		 */
+		if (rdev->supply &&
+		    (rdev->constraints->always_on ||
+		     !regulator_is_enabled(rdev->supply))) {
 #ifdef CONFIG_REGULATOR_VERBOSE_DEBUG
 			dev_info(rdev_get_dev(rdev), "<%s> has always_on=%d, boot_on=%d => enable supply <%s>\n",
 				rdev_get_name(rdev), rdev->constraints->always_on, rdev->constraints->boot_on,
@@ -1488,6 +1494,7 @@ static int set_supply(struct regulator_dev *rdev,
 
 	rdev->supply = create_regulator(supply_rdev, &rdev->dev, "SUPPLY");
 	if (rdev->supply == NULL) {
+		module_put(supply_rdev->owner);
 		err = -ENOMEM;
 		return err;
 	}
@@ -1670,7 +1677,7 @@ static struct regulator *create_regulator(struct regulator_dev *rdev,
 
 	regulator = kzalloc(sizeof(*regulator), GFP_KERNEL);
 	if (regulator == NULL) {
-		kfree(supply_name);
+		kfree_const(supply_name);
 		return NULL;
 	}
 
@@ -1800,6 +1807,7 @@ static struct regulator_dev *regulator_dev_lookup(struct device *dev,
 		node = of_get_regulator(dev, supply);
 		if (node) {
 			r = of_find_regulator_by_node(node);
+			of_node_put(node);
 			if (r)
 				return r;
 
@@ -5100,6 +5108,7 @@ int regulator_mode_to_status(unsigned int mode)
 }
 EXPORT_SYMBOL_GPL(regulator_mode_to_status);
 
+#ifdef INOCO_PCBA_BUILD
 static ssize_t store_regulator_status(struct device *dev,
 				   struct device_attribute *attr, const char *buf, size_t size)
 {
@@ -5131,6 +5140,7 @@ static ssize_t store_regulator_status(struct device *dev,
 	return size;
 }
 static DEVICE_ATTR(status_control, 0664, regulator_state_show, store_regulator_status);
+#endif
 
 static struct attribute *regulator_dev_attrs[] = {
 	&dev_attr_name.attr,
@@ -5156,7 +5166,9 @@ static struct attribute *regulator_dev_attrs[] = {
 	&dev_attr_suspend_standby_mode.attr,
 	&dev_attr_suspend_mem_mode.attr,
 	&dev_attr_suspend_disk_mode.attr,
+#ifdef INOCO_PCBA_BUILD
 	&dev_attr_status_control.attr,
+#endif
 	NULL
 };
 
@@ -5717,6 +5729,7 @@ unset_supplies:
 	regulator_remove_coupling(rdev);
 	mutex_unlock(&regulator_list_mutex);
 wash:
+	regulator_put(rdev->supply);
 	kfree(rdev->coupling_desc.coupled_rdevs);
 	mutex_lock(&regulator_list_mutex);
 	regulator_ena_gpio_free(rdev);
