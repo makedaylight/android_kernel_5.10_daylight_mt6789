@@ -374,12 +374,13 @@ static unsigned long us_to_jiffies(unsigned long us)
 /*=======================================================================*/
 /* FDVT Clock control Registers */
 /*=======================================================================*/
+static int fdvt_pwr_cnt;
 #if LDVT_EARLY_PORTING_NO_CCF
 #else
 static inline void FD_Prepare_Enable_ccf_clock(void)
 {
 	int ret;
-
+	log_inf("Enable clock+, usr_cnt: %d\n", fdvt_pwr_cnt);
 	pm_runtime_get_sync(fdvt_devs->dev);
 
 	ret = mtk_smi_larb_get(fdvt_devs->larb);
@@ -389,14 +390,18 @@ static inline void FD_Prepare_Enable_ccf_clock(void)
 	ret = clk_prepare_enable(fd_clk.CG_IMGSYS_FDVT);
 	if (ret)
 		log_err("cannot prepare and enable CG_IMGSYS_FDVT clock\n");
-
+	fdvt_pwr_cnt++;
+	log_inf("Enable clock-, usr_cnt: %d\n", fdvt_pwr_cnt);
 }
 
 static inline void FD_Disable_Unprepare_ccf_clock(void)
 {
+	log_inf("Disable clock+, usr_cnt: %d\n", fdvt_pwr_cnt);
 	clk_disable_unprepare(fd_clk.CG_IMGSYS_FDVT);
 	mtk_smi_larb_put(fdvt_devs->larb);
 	pm_runtime_put_sync(fdvt_devs->dev);
+	fdvt_pwr_cnt--;
+	log_inf("Disable clock-, usr_cnt: %d\n", fdvt_pwr_cnt);
 }
 #endif
 
@@ -1037,7 +1042,7 @@ static int FDVT_probe(struct platform_device *dev)
 #endif
 
 	nr_fdvt_devs = 0;
-
+	fdvt_pwr_cnt = 0;
 	log_inf("FDVT PROBE!!!\n");
 #if IS_ENABLED(CONFIG_OF)
 

@@ -29,7 +29,7 @@
 #include <uapi/linux/sched/types.h>
 
 #ifdef CONFIG_LEDS_MTK_MODULE
-#define CONFIG_LEDS_BRIGHTNESS_CHANGED
+//#define CONFIG_LEDS_BRIGHTNESS_CHANGED
 #include <linux/leds-mtk.h>
 #else
 #define mtk_leds_brightness_set(x, y) do { } while (0)
@@ -548,13 +548,6 @@ static void mtk_gamma_bypass(struct mtk_ddp_comp *comp, int bypass,
 	struct cmdq_pkt *handle)
 {
 	DDPINFO("%s\n", __func__);
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-	/* Bypass DISP GAMMA */
-	bypass = 1;
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-GAMMA: %s: bypass: 1\n", __func__);
-#endif
-#endif
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		comp->regs_pa + DISP_GAMMA_CFG, bypass, 0x1);
 	g_gamma_relay_value[index_of_gamma(comp->id)] = bypass;
@@ -763,6 +756,9 @@ struct gamma_backup {
 	unsigned int GAMMA_CFG;
 };
 static struct gamma_backup g_gamma_backup;
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+static bool gamma_run_restore = false;
+#endif
 
 static void ddp_dither_backup(struct mtk_ddp_comp *comp)
 {
@@ -781,16 +777,13 @@ static void mtk_gamma_prepare(struct mtk_ddp_comp *comp)
 	atomic_set(&g_gamma_is_clock_on[index_of_gamma(comp->id)], 1);
 
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-	/* Bypass DISP GAMMA */
-	g_gamma_relay_value[index_of_gamma(comp->id)] = 1;
-
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-GAMMA: %s: DISP_GAMMA_EN=0x%x\n", __func__, readl(comp->regs + DISP_GAMMA_EN));
-	pr_info("DISP-GAMMA: %s: DISP_GAMMA_CFG=0x%x\n", __func__, readl(comp->regs + DISP_GAMMA_CFG));
-#endif
-
-	if (!(readl(comp->regs + DISP_GAMMA_EN) & 0x1))
+	if (gamma_run_restore)
 		ddp_dither_restore(comp);
+	else {
+		if (!(readl(comp->regs + DISP_GAMMA_EN) & 0x1))
+			ddp_dither_restore(comp);
+		gamma_run_restore = true;
+	}
 #else
 	ddp_dither_restore(comp);
 #endif
@@ -799,11 +792,6 @@ static void mtk_gamma_prepare(struct mtk_ddp_comp *comp)
 static void mtk_gamma_unprepare(struct mtk_ddp_comp *comp)
 {
 	unsigned long flags;
-
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-GAMMA: %s: DISP_GAMMA_EN=0x%x\n", __func__, readl(comp->regs + DISP_GAMMA_EN));
-	pr_info("DISP-GAMMA: %s: DISP_GAMMA_CFG=0x%x\n", __func__, readl(comp->regs + DISP_GAMMA_CFG));
-#endif
 
 	DDPINFO("%s @ %d......... spin_trylock_irqsave ++ ",
 		__func__, __LINE__);

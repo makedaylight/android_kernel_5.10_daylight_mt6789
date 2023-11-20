@@ -891,6 +891,11 @@
 		};
 	};
 
+	security_ao@1001a000 {
+		compatible = "mediatek,security_ao";
+		reg = <0 0x1001a000 0 0x1000>;
+	};
+
 	sleep_sram@1001e000 {
 		compatible = "mediatek,sleep_sram";
 		reg = <0 0x1001e000 0 0x4000>;
@@ -1833,10 +1838,12 @@
 
 	ccci_scp:ccci_scp {
 		compatible = "mediatek,ccci_md_scp";
+		reg = <0 0x1023c000 0 0x1000>, /* AP_CCIF2_BASE */
+		      <0 0x1023d000 0 0x1000>; /* MD_CCIF2_BASE */
 		clocks = <&infracfg_ao_clk CLK_IFRAO_CCIF2_AP>,
-			<&infracfg_ao_clk CLK_IFRAO_CCIF2_MD>;
+			 <&infracfg_ao_clk CLK_IFRAO_CCIF2_MD>;
 		clock-names = "infra-ccif2-ap",
-			"infra-ccif2-md";
+			      "infra-ccif2-md";
 	};
 
 	gpio_usage_mapping:gpio_usage_mapping {
@@ -4450,6 +4457,7 @@
 				<&infracfg_ao_clk CLK_IFRAO_AP_DMA>;
 		clock-names = "main", "dma";
 		clock-div = <1>;
+		mediatek,data_hold_time;
 	};
 
 	i2c6: i2c@11f00000 {

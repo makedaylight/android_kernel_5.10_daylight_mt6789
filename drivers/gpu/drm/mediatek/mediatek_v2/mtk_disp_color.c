@@ -2159,15 +2159,6 @@ static void mtk_color_config(struct mtk_ddp_comp *comp,
 void ddp_color_bypass_color(struct mtk_ddp_comp *comp, int bypass,
 		struct cmdq_pkt *handle)
 {
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-	/* Bypass DISP COLOR */
-	bypass = 1;
-
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DDP-COLOR: %s: bypass: 1\n", __func__);
-#endif
-#endif
-
 	g_color_bypass[index_of_color(comp->id)] = bypass;
 
 	if (bypass) {
@@ -3180,13 +3171,6 @@ static void mtk_color_bypass(struct mtk_ddp_comp *comp, int bypass,
 	struct mtk_disp_color *color = comp_to_color(comp);
 
 	DDPINFO("%s: bypass: %d\n", __func__, bypass);
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-	/* Bypass DISP COLOR */
-	bypass = 1;
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DDP-COLOR: %s: bypass: 1\n", __func__);
-#endif
-#endif
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		       comp->regs_pa + DISP_COLOR_CFG_MAIN,
 		       COLOR_BYPASS_ALL | COLOR_SEQ_SEL, ~0);
@@ -3397,6 +3381,9 @@ struct color_backup {
 	unsigned int COLOR_CFG_MAIN;
 };
 static struct color_backup g_color_backup;
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+static bool color_run_restore = false;
+#endif
 
 static void ddp_color_backup(struct mtk_ddp_comp *comp)
 {
@@ -3421,21 +3408,16 @@ static void mtk_color_prepare(struct mtk_ddp_comp *comp)
 		mtk_ddp_write_mask_cpu(comp, COLOR_BYPASS_SHADOW,
 			DISP_COLOR_SHADOW_CTRL, COLOR_BYPASS_SHADOW);
 
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-	/* Bypass DISP COLOR */
-	g_color_bypass[index_of_color(comp->id)] = 1;
-	//g_color_backup.COLOR_CFG_MAIN = 1 << 7; /* bypass all */
-
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-COLOR: %s: DISP_COLOR_CFG_MAIN=0x%x\n", __func__, readl(comp->regs + DISP_COLOR_CFG_MAIN));
-	pr_info("DISP-COLOR: %s: DISP_COLOR_START=0x%x\n", __func__, readl(comp->regs + DISP_COLOR_START(color)));
-#endif
-
-	if (!(readl(comp->regs + DISP_COLOR_START(color)) & 0x1))
-		// restore DISP_COLOR_CFG_MAIN register
-		ddp_color_restore(comp);
-#else
 	// restore DISP_COLOR_CFG_MAIN register
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+	if (color_run_restore)
+		ddp_color_restore(comp);
+	else {
+		if (!(readl(comp->regs + DISP_COLOR_START(color)) & 0x1))
+			ddp_color_restore(comp);
+		color_run_restore = true;
+	}
+#else
 	ddp_color_restore(comp);
 #endif
 }
@@ -3443,11 +3425,6 @@ static void mtk_color_prepare(struct mtk_ddp_comp *comp)
 static void mtk_color_unprepare(struct mtk_ddp_comp *comp)
 {
 	unsigned long flags;
-
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-COLOR: %s: DISP_COLOR_CFG_MAIN=0x%x\n", __func__, readl(comp->regs + DISP_COLOR_CFG_MAIN));
-	pr_info("DISP-COLOR: %s: DISP_COLOR_START=0x%x\n", __func__, readl(comp->regs + DISP_COLOR_START(comp_to_color(comp))));
-#endif
 
 	DDPINFO("%s @ %d......... spin_lock_irqsave ++ ", __func__, __LINE__);
 	spin_lock_irqsave(&g_color_clock_lock, flags);

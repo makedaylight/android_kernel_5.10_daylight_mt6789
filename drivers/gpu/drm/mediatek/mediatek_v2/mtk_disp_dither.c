@@ -422,13 +422,6 @@ static void mtk_dither_bypass(struct mtk_ddp_comp *comp, int bypass,
 {
 	struct mtk_disp_dither *priv = dev_get_drvdata(comp->dev);
 	DDPINFO("%s\n", __func__);
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-	/* Bypass DISP DITHER */
-	bypass = 1;
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-DITHER: %s: bypass: 1\n", __func__);
-#endif
-#endif
 	g_dither_relay_value[index_of_dither(comp->id)] = bypass;
 
 	if (bypass)
@@ -446,6 +439,9 @@ struct dither_backup {
 	unsigned int REG_DITHER_CFG;
 };
 static struct dither_backup g_dither_backup;
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+static bool dither_run_restore = false;
+#endif
 
 static void ddp_dither_backup(struct mtk_ddp_comp *comp)
 {
@@ -472,16 +468,13 @@ static void mtk_dither_prepare(struct mtk_ddp_comp *comp)
 			DITHER_REG(0), DITHER_BYPASS_SHADOW);
 
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-	/* Bypass DISP DITHER */
-	g_dither_relay_value[index_of_dither(comp->id)] = 1;
-
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-DITHER: %s: DISP_DITHER_EN=0x%x\n", __func__, readl(comp->regs + DISP_DITHER_EN));
-	pr_info("DISP-DITHER: %s: DISP_REG_DITHER_CFG=0x%x\n", __func__, readl(comp->regs + DISP_REG_DITHER_CFG));
-#endif
-
-	if (!(readl(comp->regs + DISP_DITHER_EN) & 0x1))
+	if (dither_run_restore)
 		ddp_dither_restore(comp);
+	else {
+		if (!(readl(comp->regs + DISP_DITHER_EN) & 0x1))
+			ddp_dither_restore(comp);
+		dither_run_restore = true;
+	}
 #else
 	ddp_dither_restore(comp);
 #endif
@@ -491,11 +484,6 @@ static void mtk_dither_unprepare(struct mtk_ddp_comp *comp)
 {
 	unsigned long flags;
 	int index = index_of_dither(comp->id);
-
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-DITHER: %s: DISP_DITHER_EN=0x%x\n", __func__, readl(comp->regs + DISP_DITHER_EN));
-	pr_info("DISP-DITHER: %s: DISP_REG_DITHER_CFG=0x%x\n", __func__, readl(comp->regs + DISP_REG_DITHER_CFG));
-#endif
 
 	DDPINFO("%s @ %d......... spin_lock_irqsave ++ ",
 		__func__, __LINE__);
@@ -587,14 +575,6 @@ void mtk_dither_set_param(struct mtk_ddp_comp *comp,
 {
 	bool bypass = relay;
 	uint32_t dither_mode = 0x00003000 | (0x1 << mode);
-
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-	/* Bypass DISP DITHER */
-	bypass = 1;
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-DITHER: %s: bypass: 1\n", __func__);
-#endif
-#endif
 
 	pr_notice("%s: bypass: %d, dither_mode: %x", __func__, bypass, dither_mode);
 	if (bypass) {

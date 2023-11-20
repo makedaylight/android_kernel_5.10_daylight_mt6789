@@ -2817,30 +2817,7 @@ CAMERA_HW_Ioctl_EXIT:
 	return i4RetValue;
 }
 
-static int imgsensor_open(struct inode *a_pstInode, struct file *a_pstFile)
-{
-	mutex_lock(&imgsensor_mutex);
-
-#ifdef IMGSENSOR_USE_RPM
-	// pr_info("%s %s 0x%x\n", __func__, "pm_runtime_get_sync", pgimgsensor->dev);
-	pm_runtime_get_sync(pgimgsensor->dev);
-#endif
-
-	if (atomic_read(&pgimgsensor->imgsensor_open_cnt) == 0)
-		imgsensor_clk_enable_all(&pgimgsensor->clk);
-
-	atomic_inc(&pgimgsensor->imgsensor_open_cnt);
-	pr_info(
-	    "%s %d\n",
-	    __func__,
-	    atomic_read(&pgimgsensor->imgsensor_open_cnt));
-
-	mutex_unlock(&imgsensor_mutex);
-
-	return 0;
-}
-
-static int imgsensor_release(struct inode *a_pstInode, struct file *a_pstFile)
+static int do_imgsensor_suspend(void)
 {
 	enum IMGSENSOR_SENSOR_IDX i = IMGSENSOR_SENSOR_IDX_MIN_NUM;
 
@@ -2856,17 +2833,66 @@ static int imgsensor_release(struct inode *a_pstInode, struct file *a_pstFile)
 		}
 
 		imgsensor_hw_release_all(&pgimgsensor->hw);
+#ifdef SENINF_USE_WAKE_LOCK
+		pr_info(
+			"%s target_put wake lock %d\n",
+			__func__,
+			atomic_read(&pgimgsensor->imgsensor_open_cnt));
+		seninf_wake_lock_put(&pgimgsensor->clk);
+#endif
 	}
+
 	pr_info(
 	    "%s %d\n",
 	    __func__,
 	    atomic_read(&pgimgsensor->imgsensor_open_cnt));
 
 	mutex_unlock(&imgsensor_mutex);
+	return 0;
+}
+
+static int do_imgsensor_resume(void)
+{
+	mutex_lock(&imgsensor_mutex);
+
+	if (atomic_read(&pgimgsensor->imgsensor_open_cnt) == 0) {
+#ifdef SENINF_USE_WAKE_LOCK
+		pr_info(
+			"%s target_get wake lock %d\n",
+			__func__,
+			atomic_read(&pgimgsensor->imgsensor_open_cnt));
+		seninf_wake_lock_get(&pgimgsensor->clk);
+#endif
+		imgsensor_clk_enable_all(&pgimgsensor->clk);
+	}
+
+	atomic_inc(&pgimgsensor->imgsensor_open_cnt);
+	pr_info(
+	    "%s %d\n",
+	    __func__,
+	    atomic_read(&pgimgsensor->imgsensor_open_cnt));
+
+	mutex_unlock(&imgsensor_mutex);
+	return 0;
+}
+
+static int imgsensor_open(struct inode *a_pstInode, struct file *a_pstFile)
+{
+#ifdef IMGSENSOR_USE_RPM
+	pm_runtime_get_sync(pgimgsensor->dev);
+#else
+	do_imgsensor_resume();
+#endif
+	return 0;
+}
+
+static int imgsensor_release(struct inode *a_pstInode, struct file *a_pstFile)
+{
 #ifdef IMGSENSOR_USE_RPM
 	pm_runtime_put_sync(pgimgsensor->dev);
+#else
+	do_imgsensor_suspend();
 #endif
-
 	return 0;
 }
 
@@ -2966,8 +2992,10 @@ static int imgsensor_probe(struct platform_device *pdev)
 #ifdef IMGSENSOR_USE_RPM
 	// PK_DBG("[imgsensor_probe] devnode = %s,
 		// &pdev->dev = 0x%x\n", pdev->dev.of_node->name, &pdev->dev);
+	pr_info("[%s]pm_runtime_enable  +\n", __func__);
 	pgimgsensor->dev = &pdev->dev;
 	pm_runtime_enable(pgimgsensor->dev);
+	pr_info("[%s]pm_runtime_enable  -\n", __func__);
 	// pgimgsensor->clk.pplatform_device = pdev;
 	// imgsensor_clk_init(&pgimgsensor->clk);
 #endif
@@ -3003,6 +3031,9 @@ static int imgsensor_remove(struct platform_device *pdev)
 	imgsensor_i2c_delete();
 	imgsensor_driver_unregister();
 
+#ifdef SENINF_USE_WAKE_LOCK
+	imgsensor_clk_exit(&pgimgsensor->clk);
+#endif
 	return 0;
 }
 
@@ -3020,6 +3051,28 @@ static int imgsensor_resume(struct platform_device *pdev)
  * platform driver
  */
 
+int imgsensor_runtime_suspend(struct device *pDev)
+{
+	pr_info("[%s] +\n", __func__);
+	do_imgsensor_suspend();
+	pr_info("[%s] -\n", __func__);
+
+	return 0;
+}
+
+int imgsensor_runtime_resume(struct device *pDev)
+{
+	pr_info("[%s] +\n", __func__);
+	do_imgsensor_resume();
+	pr_info("[%s] -\n", __func__);
+
+	return 0;
+}
+
+static const struct dev_pm_ops pm_ops = {
+	SET_RUNTIME_PM_OPS(imgsensor_runtime_suspend, imgsensor_runtime_resume, NULL)
+};
+
 #if IS_ENABLED(CONFIG_OF)
 static const struct of_device_id gimgsensor_of_device_id[] = {
 	{ .compatible = "mediatek,camera_hw", },
@@ -3035,6 +3088,7 @@ static struct platform_driver gimgsensor_platform_driver = {
 	.driver     = {
 		.name   = "image_sensor",
 		.owner  = THIS_MODULE,
+		.pm  = &pm_ops,
 #if IS_ENABLED(CONFIG_OF)
 		.of_match_table = gimgsensor_of_device_id,
 #endif

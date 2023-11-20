@@ -436,7 +436,7 @@ ROOT_NODE {
 /* GPS GPIO standardization end */
 
 #include "mediatek/cust_mt6789_touch_1200x2000.dtsi"
-#include "mediatek/cust_tb8781p2_camera_v4l2.dtsi"
+#include "mediatek/cust_tb8781p3_camera_v4l2.dtsi"
 
 &mt6375 {
 	status = "disabled";

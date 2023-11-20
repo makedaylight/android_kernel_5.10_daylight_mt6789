@@ -589,7 +589,8 @@ static int venc_vcp_backup(struct venc_inst *inst)
 	int err = 0;
 
 	mtk_vcodec_debug_enter(inst);
-
+	if( inst == NULL)
+		return -EINVAL;
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_id = AP_IPIMSG_ENC_BACKUP;
 	msg.venc_inst = inst->vcu_inst.inst_addr;
@@ -654,8 +655,8 @@ static int vcp_venc_notify_callback(struct notifier_block *this,
 		mutex_lock(&dev->ctx_mutex);
 		list_for_each_safe(p, q, &dev->ctx_list) {
 			ctx = list_entry(p, struct mtk_vcodec_ctx, list);
-			if (ctx != NULL && ctx->state < MTK_STATE_ABORT
-					&& ctx->state > MTK_STATE_FREE) {
+			if (ctx != NULL && ctx->drv_handle != 0 &&
+				ctx->state < MTK_STATE_ABORT && ctx->state > MTK_STATE_FREE) {
 				mutex_unlock(&dev->ctx_mutex);
 				backup = true;
 				venc_vcp_backup((struct venc_inst *)ctx->drv_handle);
@@ -1108,12 +1109,14 @@ static void venc_get_free_buffers(struct venc_inst *inst,
 	pResult->is_key_frm = list->is_key_frm[list->read_idx];
 	pResult->bs_va = list->venc_bs_va_list[list->read_idx];
 	pResult->frm_va = list->venc_fb_va_list[list->read_idx];
+	pResult->flags = list->flags[list->read_idx];
 
-	mtk_vcodec_debug(inst, "bsva %lx frva %lx bssize %d iskey %d",
+	mtk_vcodec_debug(inst, "bsva %lx frva %lx bssize %d iskey %d flags 0x%x",
 		pResult->bs_va,
 		pResult->frm_va,
 		pResult->bs_size,
-		pResult->is_key_frm);
+		pResult->is_key_frm,
+		pResult->flags);
 
 	list->read_idx = (list->read_idx == VENC_MAX_FB_NUM - 1U) ?
 			 0U : list->read_idx + 1U;

@@ -4,6 +4,7 @@
  * Author: Yong Wu <yong.wu@mediatek.com>
  */
 #define pr_fmt(fmt)    "mtk_iommu: " fmt
+//#define IOMMU_SECURE_DEBUG
 
 #include <linux/bitfield.h>
 #include <linux/bug.h>
@@ -227,6 +228,7 @@
 #define PM_OPS_SKIP			BIT(22)
 #define SHARE_PGTABLE			BIT(23)
 #define IOMMU_NO_SMCCC			BIT(24)
+#define HAS_EMI_PM			BIT(25)
 
 #define POWER_ON_STA		1
 #define POWER_OFF_STA		0
@@ -2936,7 +2938,7 @@ static int mtk_iommu_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused mtk_iommu_runtime_suspend(struct device *dev)
+static int mtk_iommu_hw_suspend(struct device *dev)
 {
 	struct mtk_iommu_data *data = dev_get_drvdata(dev);
 	struct mtk_iommu_suspend_reg *reg = &data->reg;
@@ -2991,7 +2993,7 @@ static int __maybe_unused mtk_iommu_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused mtk_iommu_runtime_resume(struct device *dev)
+static int mtk_iommu_hw_resume(struct device *dev)
 {
 	struct mtk_iommu_data *data = dev_get_drvdata(dev);
 	struct mtk_iommu_suspend_reg *reg = &data->reg;
@@ -3058,7 +3060,48 @@ static int __maybe_unused mtk_iommu_runtime_resume(struct device *dev)
 	return 0;
 }
 
+static int __maybe_unused mtk_iommu_runtime_suspend(struct device *dev)
+{
+	struct mtk_iommu_data *data = dev_get_drvdata(dev);
+
+	if (!MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_EMI_PM))
+		return mtk_iommu_hw_suspend(dev);
+
+	return 0;
+}
+
+static int __maybe_unused mtk_iommu_runtime_resume(struct device *dev)
+{
+	struct mtk_iommu_data *data = dev_get_drvdata(dev);
+
+	if (!MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_EMI_PM))
+		return mtk_iommu_hw_resume(dev);
+
+	return 0;
+}
+
+static int __maybe_unused mtk_iommu_suspend(struct device *dev)
+{
+	struct mtk_iommu_data *data = dev_get_drvdata(dev);
+
+	if (MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_EMI_PM))
+		return mtk_iommu_hw_suspend(dev);
+
+	return 0;
+}
+
+static int __maybe_unused mtk_iommu_resume(struct device *dev)
+{
+	struct mtk_iommu_data *data = dev_get_drvdata(dev);
+
+	if (MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_EMI_PM))
+		return mtk_iommu_hw_resume(dev);
+
+	return 0;
+}
+
 #if IS_ENABLED(CONFIG_MTK_IOMMU_MISC_SECURE)
+#ifdef IOMMU_SECURE_DEBUG
 static int mtk_dump_reg(const struct mtk_iommu_data *data,
 	unsigned int start, unsigned int length)
 {
@@ -3116,12 +3159,15 @@ static int mtk_dump_rs_sta_info(const struct mtk_iommu_data *data, int mmu)
 			    REG_MMU_RS_VA(mmu, 0),
 			    MTK_IOMMU_RS_COUNT * 4);
 }
+#endif /* IOMMU_SECURE_DEBUG */
 #endif
 
 static void mtk_dump_reg_for_hang_issue(struct mtk_iommu_data *data)
 {
 #if IS_ENABLED(CONFIG_MTK_IOMMU_MISC_SECURE)
+#ifdef IOMMU_SECURE_DEBUG
 	int cnt, ret, i, dump_count = 1;
+#endif /* IOMMU_SECURE_DEBUG */
 #endif
 	void __iomem *base = data->base;
 
@@ -3152,6 +3198,7 @@ static void mtk_dump_reg_for_hang_issue(struct mtk_iommu_data *data)
 		readl_relaxed(base + REG_MMU_CTRL_REG));
 
 #if IS_ENABLED(CONFIG_MTK_IOMMU_MISC_SECURE)
+#ifdef IOMMU_SECURE_DEBUG
 	ret = ao_secure_dbg_switch_by_atf(data->plat_data->iommu_type,
 			data->plat_data->iommu_id, 1);
 	if (ret) {
@@ -3173,6 +3220,7 @@ static void mtk_dump_reg_for_hang_issue(struct mtk_iommu_data *data)
 			data->plat_data->iommu_id, 0);
 	if (ret)
 		pr_err("%s, failed to disable secure debug\n", __func__);
+#endif /* IOMMU_SECURE_DEBUG */
 #endif
 	pr_info("%s done, (%d, %d)\n", __func__, data->plat_data->iommu_type,
 		data->plat_data->iommu_id);
@@ -3225,6 +3273,7 @@ EXPORT_SYMBOL_GPL(mtk_iommu_dbg_hang_detect);
 
 static const struct dev_pm_ops mtk_iommu_pm_ops = {
 	SET_RUNTIME_PM_OPS(mtk_iommu_runtime_suspend, mtk_iommu_runtime_resume, NULL)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(mtk_iommu_suspend, mtk_iommu_resume)
 	SET_LATE_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
 				     pm_runtime_force_resume)
 };
@@ -3244,7 +3293,7 @@ static const struct mtk_iommu_plat_data mt2712_data = {
 static const struct mtk_iommu_plat_data mt6739_data = {
 	.m4u_plat      = M4U_MT6739,
 	.flags         = HAS_SUB_COMM | OUT_ORDER_WR_EN | WR_THROT_EN |
-			 NOT_STD_AXI_MODE | SHARE_PGTABLE,
+			 NOT_STD_AXI_MODE | SHARE_PGTABLE | HAS_EMI_PM,
 	.inv_sel_reg   = REG_MMU_INV_SEL_GEN1,
 	.iova_region   = single_domain,
 	.iova_region_nr = ARRAY_SIZE(single_domain),
@@ -3255,7 +3304,7 @@ static const struct mtk_iommu_plat_data mt6739_data = {
 static const struct mtk_iommu_plat_data mt6761_data = {
 	.m4u_plat      = M4U_MT6761,
 	.flags         = HAS_SUB_COMM | OUT_ORDER_WR_EN | WR_THROT_EN |
-			 NOT_STD_AXI_MODE | SHARE_PGTABLE,
+			 NOT_STD_AXI_MODE | SHARE_PGTABLE | HAS_EMI_PM,
 	.inv_sel_reg   = REG_MMU_INV_SEL_GEN1,
 	.iova_region   = single_domain,
 	.iova_region_nr = ARRAY_SIZE(single_domain),
@@ -3266,7 +3315,7 @@ static const struct mtk_iommu_plat_data mt6761_data = {
 static const struct mtk_iommu_plat_data mt6765_data = {
 	.m4u_plat      = M4U_MT6765,
 	.flags         = HAS_SUB_COMM | OUT_ORDER_WR_EN | WR_THROT_EN |
-			 NOT_STD_AXI_MODE | SHARE_PGTABLE,
+			 NOT_STD_AXI_MODE | SHARE_PGTABLE | HAS_EMI_PM,
 	.inv_sel_reg   = REG_MMU_INV_SEL_GEN1,
 	.iova_region   = single_domain,
 	.iova_region_nr = ARRAY_SIZE(single_domain),
@@ -3277,7 +3326,7 @@ static const struct mtk_iommu_plat_data mt6765_data = {
 static const struct mtk_iommu_plat_data mt6768_data = {
 	.m4u_plat      = M4U_MT6768,
 	.flags         = HAS_SUB_COMM | OUT_ORDER_WR_EN | WR_THROT_EN |
-			 NOT_STD_AXI_MODE | SHARE_PGTABLE,
+			 NOT_STD_AXI_MODE | SHARE_PGTABLE | HAS_EMI_PM,
 	.inv_sel_reg   = REG_MMU_INV_SEL_GEN1,
 	.iova_region   = single_domain,
 	.iova_region_nr = ARRAY_SIZE(single_domain),

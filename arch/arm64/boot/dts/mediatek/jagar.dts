@@ -12,6 +12,7 @@
 #include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/gce/mt6789-gce.h>
+#include <dt-bindings/clock/mt6789-clk.h>
 
 // #define RT4539_BACKLIGHT_USE_PWM_MODE
 
@@ -29,6 +30,12 @@ ROOT_NODE {
 		regulator-max-microvolt = <5000000>;
 		gpios = <&pio 153 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
+	};
+
+	hall: hall {
+		compatible = "hall-switch";
+		linux,gpio-int = <&pio 1 GPIO_ACTIVE_LOW>;
+		linux,wakeup;
 	};
 };
 
@@ -94,6 +101,11 @@ ROOT_NODE {
 			drive-strength = <0>;
 		};
 	};
+};
+
+&disp_aal0 {
+	mtk_aal_support = <0>;
+	mtk_dre30_support = <0>;
 };
 
 &disp_pwm {
@@ -953,7 +965,13 @@ ROOT_NODE {
 	pinctrl-5 = <&mmc1_pins_poweroff>;
 	eint-gpios = <&pio 74 GPIO_ACTIVE_HIGH>; /* MSDC1_DAT1 EINT74 */
 	bus-width = <4>;
+#if 0
+	assigned-clocks = <&topckgen_clk CLK_TOP_MSDC30_1_SEL>;
+	assigned-clock-parents = <&topckgen_clk CLK_TOP_MAINPLL_D6_D2>; /* 182MHz */
+	max-frequency = <182000000>;
+#else
 	max-frequency = <200000000>;
+#endif
 	ocr-voltage = <0x00030000>;
 
 	cap-sd-highspeed;
@@ -977,6 +995,27 @@ ROOT_NODE {
 
 	/* The runtime autosuspend works if SDIO async IRQ is enabled. */
 	//autosuspend-delay = <50>; /* The default value is 50ms. */
+
+	dvfsrc-vcore-supply = <&dvfsrc_vcore>;
+	//req-vcore = <725000>;
+	//req-vcore = <650000>;
+	//req-vcore = <600000>;
+	//req-vcore = <550000>;
+
+	resets = <&infracfg_rst 4>;
+	reset-names = "hrst";
+
+#if 0
+	/* 64-bit delay map */
+	rising-delay-map-mask  = <0x00000000 0x000007ff>; /* 0x001ff000000003ff */
+	falling-delay-map-mask = <0x00000000 0x00ffffff>; /* 0x000000007fffffff */
+#else
+	/* 32-bit delay map */
+	rising-delay-map-mask  = <0x000007ff>; /* 0x000003ff */
+	falling-delay-map-mask = <0x00ffffff>; /* to get a smaller delay */ /* 0x7fffffff */
+#endif
+	mediatek,ckgen-delay = <1>; /* CKGEN_MSDC_DLY_SEL: 0-31 */
+	//tuning-both-edges;
 
 	affinity-hint-cpu = <2>;
 };
@@ -1218,7 +1257,7 @@ ROOT_NODE {
 	boot_mode = <&chosen>;
 };
 
-&pe4 {
+&pe45 {
 	gauge = <&bq78z100>;
 };
 
@@ -1316,7 +1355,7 @@ ROOT_NODE {
 
 	//ieoc_deg = <2048>; //ieoc deglitch time: 2, 256 (default), 1024, 2048ms
 
-	//chg_tmr = <10>; //change safety timer to 20/15/10/5 hrs if needed
+	chg_tmr = <15>; //change safety timer to 20/15/10/5 hrs if needed
 	//chg_tmr_en;
 
 	//chg_name = "secondary_chg"; //test RT9471 as primary_chg

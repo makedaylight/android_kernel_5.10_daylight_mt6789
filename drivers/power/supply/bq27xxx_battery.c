@@ -1226,7 +1226,7 @@ static inline int bq27xxx_read(struct bq27xxx_device_info *di, int reg_index,
 		dev_err(di->dev, "%s: failed to read register 0x%02x (index %d)\n",
 				__func__, di->regs[reg_index], reg_index);
 
-	BQ27XXX_MSLEEP(3); //avoid i2c error due to continuous read (it won't happen if dev_dbg is enabled.)
+	BQ27XXX_MSLEEP(5); //avoid i2c error due to continuous read (it won't happen if dev_dbg is enabled.)
 	return ret;
 }
 
@@ -1990,12 +1990,16 @@ static bool bq27xxx_battery_is_full(struct bq27xxx_device_info *di, int flags)
 			di->cache.capacity, (flags & BQ27Z561_FLAG_FC) ? 1 : 0);
 
 	if (di->cache.capacity == 100) {
+#if 0 //discard FC flag; solely based on capacity level
 		if (di->opts & BQ27XXX_O_ZERO)
 			return (flags & BQ27000_FLAG_FC);
 		else if (di->opts & BQ27Z561_O_BITS)
 			return (flags & BQ27Z561_FLAG_FC);
 		else
 			return (flags & BQ27XXX_FLAG_FC);
+#else
+		return true;
+#endif
 	} else {
 		return false;
 	}
@@ -2056,15 +2060,13 @@ static int bq27xxx_battery_current_and_status(
 
 		if (chg_online.intval == 0) {
 			val_status->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		} else if (bq27xxx_battery_is_full(di, flags)) { //chg_online for the followings
+			val_status->intval = POWER_SUPPLY_STATUS_FULL;
+			dev_notice(di->dev, "%s: Report battery is full\n", __func__);
 		} else if (curr > 0) {
 			val_status->intval = POWER_SUPPLY_STATUS_CHARGING;
 		} else { //curr == 0 or curr < 0
-			if (bq27xxx_battery_is_full(di, flags)) {
-				val_status->intval = POWER_SUPPLY_STATUS_FULL;
-				dev_notice(di->dev, "%s: Report battery is full\n", __func__);
-			}
-			else
-				val_status->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+			val_status->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		}
 	}
 
@@ -2342,6 +2344,7 @@ static void bq27xxx_external_power_changed(struct power_supply *psy)
 
 	cancel_delayed_work_sync(&di->work);
 	schedule_delayed_work(&di->work, 0);
+	power_supply_changed(di->bat);
 }
 
 
@@ -2363,7 +2366,9 @@ static bool bq27xxx_is_no_battery(struct bq27xxx_device_info *di)
 
 int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 {
+#ifdef CONFIG_BATTERY_ID
 	int ret = 0;
+#endif
 	struct power_supply_desc *psy_desc;
 	struct power_supply_config psy_cfg = {
 		.of_node = di->dev->of_node,

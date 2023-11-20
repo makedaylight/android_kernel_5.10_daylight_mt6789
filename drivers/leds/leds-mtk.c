@@ -324,8 +324,11 @@ static int mtk_set_brightness(struct led_classdev *led_cdev,
 	}
 	mutex_unlock(&led_dat->led_access);
 
+#if IS_ENABLED(CONFIG_LEDS_RT4539)
 	// skip control from AAL
-	// call_notifier(LED_BRIGHTNESS_CHANGED, led_conf);
+#else
+//	call_notifier(LED_BRIGHTNESS_CHANGED, led_conf);
+#endif
 	return 0;
 
 }

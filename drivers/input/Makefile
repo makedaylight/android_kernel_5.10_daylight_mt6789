@@ -31,3 +31,6 @@ obj-$(CONFIG_INPUT_APMPOWER)	+= apm-power.o
 obj-$(CONFIG_RMI4_CORE)		+= rmi4/
 
 obj-$(CONFIG_INPUT_WACOM)	+= wacom/
+
+obj-$(CONFIG_SENSORS_HALL)	+= hall_sensor.o
+

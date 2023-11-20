@@ -10,6 +10,15 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
+#if defined(CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE) && IS_ENABLED(CONFIG_DEBUG_FS)
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
+#endif
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+//#define CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+#endif
+//#define CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+
 #ifndef DRM_CMDQ_DISABLE
 #include <linux/soc/mediatek/mtk-cmdq-ext.h>
 #else
@@ -27,7 +36,7 @@
 #include "platform/mtk_drm_6789.h"
 
 #ifdef CONFIG_LEDS_MTK_MODULE
-#define CONFIG_LEDS_BRIGHTNESS_CHANGED
+//#define CONFIG_LEDS_BRIGHTNESS_CHANGED
 #include <linux/leds-mtk.h>
 #else
 #define mtk_leds_brightness_set(x, y) do { } while (0)
@@ -54,11 +63,15 @@
 #define CCORR_BYASS_GAMMA      (1)
 
 #define CCORR_REG(idx) (idx * 4 + 0x80)
-#define CCORR_CLIP(val, min, max) ((val >= max) ? \
-	max : ((val <= min) ? min : val))
+#define CCORR_CLIP(val, min, max) (((val) >= (max)) ? \
+	(max) : (((val) <= (min)) ? (min) : (val)))
+#define CCORR_ABS(val) (((val) >= 0) ? (val) : (-(val)))
 
 static unsigned int g_ccorr_8bit_switch[DISP_CCORR_TOTAL];
 static unsigned int g_ccorr_relay_value[DISP_CCORR_TOTAL];
+//#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+static unsigned int g_ccorr_size[DISP_CCORR_TOTAL];
+//#endif
 
 struct drm_mtk_ccorr_caps disp_ccorr_caps;
 static int ccorr_offset_base = 1024;
@@ -77,13 +90,16 @@ static bool g_is_aibld_cv_mode;
 		((module == DDP_COMPONENT_CCORR1) ? 1 : \
 		((module == DDP_COMPONENT_CCORR2) ? 2 : 3)))
 
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 static bool bypass_color0, bypass_color1;
+#endif
 
 static atomic_t g_ccorr_is_clock_on[DISP_CCORR_TOTAL] = {
 	ATOMIC_INIT(0), ATOMIC_INIT(0), ATOMIC_INIT(0), ATOMIC_INIT(0) };
 
 static atomic_t g_irq_backlight_change = ATOMIC_INIT(0);
 
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 static struct DRM_DISP_CCORR_COEF_T *g_disp_ccorr_coef[DISP_CCORR_TOTAL] = {
 	NULL };
 static int g_ccorr_color_matrix[DISP_CCORR_TOTAL][3][3] = {
@@ -149,9 +165,8 @@ static int g_rgb_matrix[DISP_CCORR_TOTAL][3][3] = {
 		{0, 1024, 0},
 		{0, 0, 1024}
 	} };
-#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 static struct DRM_DISP_CCORR_COEF_T g_multiply_matrix_coef;
-#endif
+#endif /* !CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE */
 static int g_disp_ccorr_without_gamma;
 static int g_disp_ccorr_temp_linear;
 
@@ -179,12 +194,8 @@ static DEFINE_MUTEX(g_ccorr_global_lock);
 static struct mtk_ddp_comp *default_comp;
 static struct mtk_ddp_comp *ccorr1_default_comp;
 
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
-#define disp_ccorr_write_coef_reg(comp, handle, lock) 0
-#else
 static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 	struct cmdq_pkt *handle, int lock);
-#endif
 /* static void ccorr_dump_reg(void); */
 
 enum CCORR_IOCTL_CMD {
@@ -197,12 +208,151 @@ struct mtk_disp_ccorr {
 	struct mtk_ddp_comp ddp_comp;
 	struct drm_crtc *crtc;
 	const struct mtk_disp_ccorr_data *data;
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+	int stored_color_matrix_rgb[3];
+	int grayscale_color_matrix[3][3];
+	struct DRM_DISP_CCORR_COEF_T grayscale_ccorr_coef;
+#endif
 };
 
 static inline struct mtk_disp_ccorr *comp_to_ccorr(struct mtk_ddp_comp *comp)
 {
 	return container_of(comp, struct mtk_disp_ccorr, ddp_comp);
 }
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+static int disp_ccorr_grayscale_calc(struct mtk_disp_ccorr *disp_ccorr,
+		int color_matrix_r, int color_matrix_g, int color_matrix_b)
+{
+	int i;
+	int coef_rgb[3], sum, coef;
+
+	disp_ccorr->stored_color_matrix_rgb[0] = color_matrix_r;
+	disp_ccorr->stored_color_matrix_rgb[1] = color_matrix_g;
+	disp_ccorr->stored_color_matrix_rgb[2] = color_matrix_b;
+
+	if (CCORR_ABS(disp_ccorr->stored_color_matrix_rgb[0]) > 20000 ||
+			CCORR_ABS(disp_ccorr->stored_color_matrix_rgb[1]) > 20000 ||
+			CCORR_ABS(disp_ccorr->stored_color_matrix_rgb[2]) > 20000) {
+		pr_err("%s: ERR: -20000 <= (r'=%d)/(g'=%d)/(b'=%d) <= 20000\n", __func__,
+			disp_ccorr->stored_color_matrix_rgb[0],
+			disp_ccorr->stored_color_matrix_rgb[1],
+			disp_ccorr->stored_color_matrix_rgb[2]);
+		return -EINVAL;
+	}
+
+	sum = disp_ccorr->stored_color_matrix_rgb[0] +
+			disp_ccorr->stored_color_matrix_rgb[1] +
+			disp_ccorr->stored_color_matrix_rgb[2];
+	if (sum <= 0) {
+		pr_err("%s: ERR: ((r'=%d) + (g'=%d) + (b'=%d) = %d) > 0\n", __func__,
+			disp_ccorr->stored_color_matrix_rgb[0],
+			disp_ccorr->stored_color_matrix_rgb[1],
+			disp_ccorr->stored_color_matrix_rgb[2],
+			sum);
+		return -EINVAL;
+	}
+
+	coef = DIV_ROUND_CLOSEST(color_matrix_r * ccorr_offset_base, 10000);
+	coef_rgb[0] = CCORR_CLIP(coef, ccorr_max_negative, ccorr_max_positive);
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+	pr_info("%s: COEF[0] R = %d -> %d\n", __func__, coef, coef_rgb[0]);
+#endif
+
+	coef = DIV_ROUND_CLOSEST(color_matrix_g * ccorr_offset_base, 10000);
+	coef_rgb[1] = CCORR_CLIP(coef, ccorr_max_negative, ccorr_max_positive);
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+	pr_info("%s: COEF[1] G = %d -> %d\n", __func__, coef, coef_rgb[1]);
+#endif
+
+	coef = DIV_ROUND_CLOSEST(color_matrix_b * ccorr_offset_base, 10000);
+	coef_rgb[2] = CCORR_CLIP(coef, ccorr_max_negative, ccorr_max_positive);
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+	pr_info("%s: COEF[2] B = %d -> %d\n", __func__, coef, coef_rgb[2]);
+#endif
+
+	coef = coef_rgb[0] + coef_rgb[1] + coef_rgb[2];
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+	pr_info("%s: COEF SUM = %d (<-> base %d)\n", __func__, coef, ccorr_offset_base);
+#endif
+	/* 1.0 -> 2048 */
+	if (sum == 10000 && coef != ccorr_offset_base) {
+		int i, smallest = 0, largest = 0;
+		int max, min;
+
+		max = coef_rgb[0];
+		min = coef_rgb[0];
+		for (i = 1 ; i < 3 ; i++) {
+			if (coef_rgb[i] < min) {
+				min = coef_rgb[i];
+				smallest = i;
+			}
+			if (coef_rgb[i] > max) {
+				max = coef_rgb[i];
+				largest = i;
+			}
+		}
+
+		if (coef > ccorr_offset_base) {
+			coef_rgb[largest] -= (coef - ccorr_offset_base);
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+			pr_info("%s: (largest) COEF[%d] - (%d) = %d\n", __func__,
+					largest, coef - ccorr_offset_base, coef_rgb[largest]);
+#endif
+		} else {
+			coef_rgb[smallest] += (ccorr_offset_base - coef);
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+			pr_info("%s: (smallest) COEF[%d] - (%d) = %d\n", __func__,
+					smallest, ccorr_offset_base - coef, coef_rgb[smallest]);
+#endif
+		}
+	}
+
+	for (i = 0 ; i < 3 ; i++) {
+		disp_ccorr->grayscale_color_matrix[0][i] = color_matrix_r;
+		disp_ccorr->grayscale_color_matrix[1][i] = color_matrix_g;
+		disp_ccorr->grayscale_color_matrix[2][i] = color_matrix_b;
+
+		disp_ccorr->grayscale_ccorr_coef.coef[i][0] = ((u32)coef_rgb[0]) & ccorr_fullbit_mask;
+		disp_ccorr->grayscale_ccorr_coef.coef[i][1] = ((u32)coef_rgb[1]) & ccorr_fullbit_mask;
+		disp_ccorr->grayscale_ccorr_coef.coef[i][2] = ((u32)coef_rgb[2]) & ccorr_fullbit_mask;
+	}
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	for (i = 0; i < 3; i++) {
+		pr_info("grayscaleColorMatrix[%d][0-2] = {%c%d.%04d, %c%d.%04d, %c%d.%04d}\n", i,
+			disp_ccorr->grayscale_color_matrix[i][0] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][0]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][0]) % 10000,
+			disp_ccorr->grayscale_color_matrix[i][1] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][1]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][1]) % 10000,
+			disp_ccorr->grayscale_color_matrix[i][2] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][2]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][2]) % 10000);
+	}
+	for (i = 0; i < 3; i += 1) {
+		pr_info("grayscaleCCORRcoef[%d][0-2] = {0x%04x, 0x%04x, 0x%04x} = {%04d, %04d, %04d}\n", i,
+			disp_ccorr->grayscale_ccorr_coef.coef[i][0],
+			disp_ccorr->grayscale_ccorr_coef.coef[i][1],
+			disp_ccorr->grayscale_ccorr_coef.coef[i][2],
+			coef_rgb[0], coef_rgb[1], coef_rgb[2]);
+	}
+#else
+	pr_info("grayscaleColorMatrix: %04d %04d %04d\n",
+			disp_ccorr->grayscale_color_matrix[0][0],
+			disp_ccorr->grayscale_color_matrix[1][1],
+			disp_ccorr->grayscale_color_matrix[2][2]);
+	pr_info("grayscaleCCORRcoef: {0x%04x, 0x%04x, 0x%04x} = {%04d, %04d, %04d}\n",
+			disp_ccorr->grayscale_ccorr_coef.coef[0][0],
+			disp_ccorr->grayscale_ccorr_coef.coef[0][1],
+			disp_ccorr->grayscale_ccorr_coef.coef[0][2],
+			coef_rgb[0], coef_rgb[1], coef_rgb[2]);
+#endif
+
+	return 0;
+}
+#endif /* CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE */
 
 #ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 static void disp_ccorr_multiply_3x3(unsigned int ccorrCoef[3][3],
@@ -225,12 +375,14 @@ static void disp_ccorr_multiply_3x3(unsigned int ccorrCoef[3][3],
 		}
 	}
 
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
 	for (i = 0; i < 3; i += 1) {
-		DDPINFO("signedCcorrCoef[%d][0-2] = {%d, %d, %d}\n", i,
+		pr_info("signedCcorrCoef[%d][0-2] = {%d, %d, %d}\n", i,
 			signedCcorrCoef[i][0],
 			signedCcorrCoef[i][1],
 			signedCcorrCoef[i][2]);
 	}
+#endif
 
 	temp_Result = (int)((signedCcorrCoef[0][0]*color_matrix[0][0] +
 		signedCcorrCoef[0][1]*color_matrix[1][0] +
@@ -286,12 +438,14 @@ static void disp_ccorr_multiply_3x3(unsigned int ccorrCoef[3][3],
 	resultCoef[2][2] = CCORR_CLIP(temp_Result, ccorr_max_negative, ccorr_max_positive) &
 		ccorr_fullbit_mask;
 
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
 	for (i = 0; i < 3; i += 1) {
-		DDPINFO("resultCoef[%d][0-2] = {0x%x, 0x%x, 0x%x}\n", i,
+		pr_info("resultCoef[%d][0-2] = {0x%x, 0x%x, 0x%x}\n", i,
 			resultCoef[i][0],
 			resultCoef[i][1],
 			resultCoef[i][2]);
 	}
+#endif
 }
 #endif
 
@@ -312,14 +466,20 @@ static int disp_ccorr_color_matrix_to_dispsys(struct drm_device *dev)
 	return ret;
 }
 
-#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 	struct cmdq_pkt *handle, int lock)
 {
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	struct DRM_DISP_CCORR_COEF_T *ccorr, *multiply_matrix;
+#else
+	struct mtk_disp_ccorr *disp_ccorr = comp_to_ccorr(comp);
+	struct DRM_DISP_CCORR_COEF_T *ccorr;
+#endif
 	int ret = 0;
 	unsigned int id = index_of_ccorr(comp->id);
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	unsigned int temp_matrix[3][3];
+#endif
 	unsigned int cfg_val;
 	int i, j;
 	struct mtk_drm_crtc *mtk_crtc = comp->mtk_crtc;
@@ -329,9 +489,12 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 	if (lock)
 		mutex_lock(&g_ccorr_global_lock);
 
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	ccorr = g_disp_ccorr_coef[id];
-	DDPINFO("%s:ccorr id:%d,aosp ccorr:%d,nonlinear:%d\n", __func__, id,
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("%s:ccorr id:%d,aosp ccorr:%d,nonlinear:%d\n", __func__, id,
 		disp_aosp_ccorr, g_disp_ccorr_without_gamma);
+#endif
 	if (ccorr == NULL) {
 		DDPINFO("%s: [%d] is not initialized\n", __func__, id);
 		ret = -EFAULT;
@@ -348,10 +511,34 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 			disp_ccorr_multiply_3x3(temp_matrix, g_rgb_matrix[id],
 				multiply_matrix->coef);
 		} else {
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+			for (i = 0; i < 3; i += 1) {
+				pr_info("disp_ccorr_write_coef_reg:ccorr[%d][0-2] = {%d, %d, %d}\n",
+						i, ccorr->coef[i][0], ccorr->coef[i][1], ccorr->coef[i][2]);
+			}
+#endif
 			if (disp_aosp_ccorr) {
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+				for (i = 0; i < 3; i++) {
+					pr_info("g_ccorr_color_matrix[%d][0-2] = {%d, %d, %d}\n",
+							i,
+							g_ccorr_color_matrix[id][i][0],
+							g_ccorr_color_matrix[id][i][1],
+							g_ccorr_color_matrix[id][i][2]);
+				}
+#endif
 				disp_ccorr_multiply_3x3(ccorr->coef, g_ccorr_color_matrix[id],
 					multiply_matrix->coef);//AOSP multiply
 			} else {
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+				for (i = 0; i < 3; i++) {
+					pr_info("g_rgb_matrix[%d][0-2] = {%d, %d, %d}\n",
+							i,
+							g_rgb_matrix[id][i][0],
+							g_rgb_matrix[id][i][1],
+							g_rgb_matrix[id][i][2]);
+				}
+#endif
 				disp_ccorr_multiply_3x3(ccorr->coef, g_rgb_matrix[id],
 					multiply_matrix->coef);//PQ service multiply
 			}
@@ -362,6 +549,32 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 		ccorr->offset[1] = g_disp_ccorr_coef[id]->offset[1];
 		ccorr->offset[2] = g_disp_ccorr_coef[id]->offset[2];
 	//}
+#else
+	ccorr = &disp_ccorr->grayscale_ccorr_coef;
+#endif
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+	for (i = 0; i < 3; i++) {
+		pr_info("grayscaleColorMatrix[%d][0-2] = {%c%d.%04d, %c%d.%04d, %c%d.%04d}\n", i,
+			disp_ccorr->grayscale_color_matrix[i][0] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][0]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][0]) % 10000,
+			disp_ccorr->grayscale_color_matrix[i][1] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][1]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][1]) % 10000,
+			disp_ccorr->grayscale_color_matrix[i][2] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][2]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][2]) % 10000);
+	}
+#endif
+	for (i = 0; i < 3; i += 1) {
+		pr_info("finalCCORRcoef[%d][0-2] = {0x%x, 0x%x, 0x%x}\n", i,
+			ccorr->coef[i][0],
+			ccorr->coef[i][1],
+			ccorr->coef[i][2]);
+	}
+#endif
 
 // For 6885 need to left shift one bit
 	switch (priv->data->mmsys_id) {
@@ -409,6 +622,20 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 			comp->regs + DISP_REG_CCORR_COLOR_OFFSET_1);
 		writel(((ccorr->offset[2] & CCORR_COLOR_OFFSET_MASK)),
 			comp->regs + DISP_REG_CCORR_COLOR_OFFSET_2);
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+		pr_info("DISP-CCORR: %s: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
+		pr_info("DISP-CCORR: DISP_REG_CCORR_SIZE=0x%08x<->0x%08x\n", readl(comp->regs + DISP_REG_CCORR_SIZE), g_ccorr_size[id]);
+		pr_info("DISP-CCORR: DISP_REG_CCORR_CFG=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_CFG));
+		pr_info("DISP-CCORR: CCORR_REG(0)=0x%08x\n", readl(comp->regs + CCORR_REG(0)));
+		pr_info("DISP-CCORR: CCORR_REG(1)=0x%08x\n", readl(comp->regs + CCORR_REG(1)));
+		pr_info("DISP-CCORR: CCORR_REG(2)=0x%08x\n", readl(comp->regs + CCORR_REG(2)));
+		pr_info("DISP-CCORR: CCORR_REG(3)=0x%08x\n", readl(comp->regs + CCORR_REG(3)));
+		pr_info("DISP-CCORR: CCORR_REG(4)=0x%08x\n", readl(comp->regs + CCORR_REG(4)));
+		pr_info("DISP-CCORR: DISP_REG_CCORR_COLOR_OFFSET_0=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_COLOR_OFFSET_0));
+		pr_info("DISP-CCORR: DISP_REG_CCORR_COLOR_OFFSET_1=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_COLOR_OFFSET_1));
+		pr_info("DISP-CCORR: DISP_REG_CCORR_COLOR_OFFSET_2=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_COLOR_OFFSET_2));
+#endif
 	} else {
 		/* use CMDQ to write */
 
@@ -449,16 +676,44 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 		cmdq_pkt_write(handle, comp->cmdq_base,
 			comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_2,
 			(ccorr->offset[2] & CCORR_COLOR_OFFSET_MASK), ~0);
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+		pr_info("DISP-CCORR: %s: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
+		pr_info("DISP-CCORR: DISP_REG_CCORR_SIZE=0x%08x <-> 0x%08x\n", readl(comp->regs + DISP_REG_CCORR_SIZE), g_ccorr_size[id]);
+		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_CFG=0x%08x\n", cfg_val);
+		pr_info("DISP-CCORR: [Q] CCORR_REG(0)=0x%08x\n",
+			((ccorr->coef[0][0] & CCORR_13BIT_MASK) << 16) |
+			(ccorr->coef[0][1] & CCORR_13BIT_MASK));
+		pr_info("DISP-CCORR: [Q] CCORR_REG(1)=0x%08x\n",
+			((ccorr->coef[0][2] & CCORR_13BIT_MASK) << 16) |
+			(ccorr->coef[1][0] & CCORR_13BIT_MASK));
+		pr_info("DISP-CCORR: [Q] CCORR_REG(2)=0x%08x\n",
+			((ccorr->coef[1][1] & CCORR_13BIT_MASK) << 16) |
+			(ccorr->coef[1][2] & CCORR_13BIT_MASK));
+		pr_info("DISP-CCORR: [Q] CCORR_REG(3)=0x%08x\n",
+			((ccorr->coef[2][0] & CCORR_13BIT_MASK) << 16) |
+			(ccorr->coef[2][1] & CCORR_13BIT_MASK));
+		pr_info("DISP-CCORR: [Q] CCORR_REG(4)=0x%08x\n",
+			((ccorr->coef[2][2] & CCORR_13BIT_MASK) << 16));
+		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_COLOR_OFFSET_0=0x%08x\n",
+			(ccorr->offset[0] & CCORR_COLOR_OFFSET_MASK) |
+			(0x1 << 31));
+		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_COLOR_OFFSET_1=0x%08x\n",
+			(ccorr->offset[1] & CCORR_COLOR_OFFSET_MASK));
+		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_COLOR_OFFSET_2=0x%08x\n",
+			(ccorr->offset[2] & CCORR_COLOR_OFFSET_MASK));
+#endif
 	}
 
 	DDPINFO("%s: finish\n", __func__);
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 ccorr_write_coef_unlock:
+#endif
 	if (lock)
 		mutex_unlock(&g_ccorr_global_lock);
 
 	return ret;
 }
-#endif
 
 void disp_ccorr_on_end_of_frame(struct mtk_ddp_comp *comp)
 {
@@ -665,6 +920,7 @@ void disp_pq_notify_backlight_changed(int bl_1024)
 }
 EXPORT_SYMBOL(disp_pq_notify_backlight_changed);
 
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 static int disp_ccorr_set_coef(
 	const struct DRM_DISP_CCORR_COEF_T *user_color_corr,
 	struct mtk_ddp_comp *comp,
@@ -705,10 +961,31 @@ static int disp_ccorr_set_coef(
 						(ccorr_offset_base << 1) << ccorr_offset_mask;
 			}
 			*/
-			DDPINFO("%s: Set module(%d) coef", __func__, id);
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+			pr_info("%s: Set module(%d) coef", __func__, id);
+#endif
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+{
+			int i;
+			for (i = 0; i < 3; i += 1) {
+				pr_info("g_disp_ccorr_coef[%d][0-2] = {%d, %d, %d}\n",
+						i,
+						g_disp_ccorr_coef[id]->coef[i][0],
+						g_disp_ccorr_coef[id]->coef[i][1],
+						g_disp_ccorr_coef[id]->coef[i][2]);
+			}
+}
+			pr_info("%s: disp_aosp_ccorr=%d->0", __func__, disp_aosp_ccorr);
+#endif
 			if (disp_aosp_ccorr)
 				disp_aosp_ccorr = false;
 
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+			pr_info("%s: disp_aosp_ccorr=%d, g_disp_ccorr_without_gamma=%d, g_ccorr_relay_value=%d, g_ccorr_8bit_switch=%d\n",
+				__func__, disp_aosp_ccorr, g_disp_ccorr_without_gamma,
+				g_ccorr_relay_value[index_of_ccorr(comp->id)],
+				g_ccorr_8bit_switch[index_of_ccorr(comp->id)]);
+#endif
 			ret = disp_ccorr_write_coef_reg(comp, handle, 0);
 
 			mutex_unlock(&g_ccorr_global_lock);
@@ -726,6 +1003,7 @@ static int disp_ccorr_set_coef(
 
 	return ret;
 }
+#endif
 
 static int mtk_disp_ccorr_set_interrupt(struct mtk_ddp_comp *comp, void *data)
 {
@@ -770,6 +1048,7 @@ static int mtk_disp_ccorr_set_interrupt(struct mtk_ddp_comp *comp, void *data)
 int disp_ccorr_set_color_matrix(struct mtk_ddp_comp *comp,
 	struct cmdq_pkt *handle, int32_t matrix[16], int32_t hint, bool fte_flag)
 {
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	int ret = 0;
 	int i, j;
 	int ccorr_without_gamma = 0;
@@ -786,8 +1065,13 @@ int disp_ccorr_set_color_matrix(struct mtk_ddp_comp *comp,
 		return -EFAULT;
 	}
 	if (identity_matrix && (disp_ccorr_number == 1) &&
-			(!g_prim_ccorr_force_linear) && (disp_ccorr_linear & 0x01))
+			(!g_prim_ccorr_force_linear) && (disp_ccorr_linear & 0x01)) {
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+		pr_info("%s: identity_matrix=%d, disp_ccorr_number=%d, g_prim_ccorr_force_linear=%d, disp_ccorr_linear=0x%x\n",
+			__func__, identity_matrix, disp_ccorr_number, g_prim_ccorr_force_linear, disp_ccorr_linear);
+#endif
 		return ret;
+	}
 
 	if (g_disp_ccorr_coef[id] == NULL) {
 		ccorr = kmalloc(sizeof(struct DRM_DISP_CCORR_COEF_T), GFP_KERNEL);
@@ -824,8 +1108,10 @@ int disp_ccorr_set_color_matrix(struct mtk_ddp_comp *comp,
 	// fte_flag: true: gpu overlay && hwc not identity matrix
 	// arbitraty matrix maybe identity matrix or color transform matrix;
 	// only when set identity matrix and not gpu overlay, open display color
-	DDPINFO("hint: %d, identity: %d, fte_flag: %d, bypass: color0:%d color1:%d",
-		hint, identity_matrix, fte_flag, bypass_color0, bypass_color1);
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("%s: hint: %d, identity: %d, fte_flag: %d, bypass: color0:%d color1:%d",
+		__func__, hint, identity_matrix, fte_flag, bypass_color0, bypass_color1);
+#endif
 	if (((hint == 0) || ((hint == 1) && identity_matrix)) && (!fte_flag)) {
 		if (id == 0) {
 			if (bypass_color0 == true) {
@@ -865,6 +1151,9 @@ int disp_ccorr_set_color_matrix(struct mtk_ddp_comp *comp,
 			DDPINFO("%s, id is invalid!\n", __func__);
 		}
 	}
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("%s: bypass: color0:%d color1:%d", __func__, bypass_color0, bypass_color1);
+#endif
 
 	// offset part
 /*	if ((matrix[12] != 0) || (matrix[13] != 0) || (matrix[14] != 0))
@@ -892,21 +1181,44 @@ int disp_ccorr_set_color_matrix(struct mtk_ddp_comp *comp,
 		}
 	}
 
-	for (i = 0; i < 3; i += 1) {
-		DDPDBG("g_ccorr_color_matrix[%d][0-2] = {%d, %d, %d}\n",
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	for (i = 0; i < 3; i++) {
+		pr_info("g_disp_ccorr_coef[%d][0-2] = {%d, %d, %d}\n",
+				i,
+				g_disp_ccorr_coef[id]->coef[i][0],
+				g_disp_ccorr_coef[id]->coef[i][1],
+				g_disp_ccorr_coef[id]->coef[i][2]);
+	}
+
+	for (i = 0; i < 4; i++) {
+		pr_info("matrix[%d][0-3] = {%d, %d, %d, %d}\n",
+			i, matrix[i*4 + 0], matrix[i*4 + 1], matrix[i*4 + 2], matrix[i*4 + 3]);
+	}
+
+	for (i = 0; i < 3; i++) {
+		pr_info("g_ccorr_color_matrix[%d][0-2] = {%d, %d, %d}\n",
 				i,
 				g_ccorr_color_matrix[id][i][0],
 				g_ccorr_color_matrix[id][i][1],
 				g_ccorr_color_matrix[id][i][2]);
 	}
 
-	DDPDBG("g_ccorr_color_matrix offset {%d, %d, %d}, hint: %d\n",
+	pr_info("g_ccorr_color_matrix offset {%d, %d, %d}, hint: %d\n",
 		g_disp_ccorr_coef[id]->offset[0],
 		g_disp_ccorr_coef[id]->offset[1],
 		g_disp_ccorr_coef[id]->offset[2], hint);
+#endif /* CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG */
 
 	g_disp_ccorr_without_gamma = ccorr_without_gamma;
 	g_disp_ccorr_temp_linear = g_disp_ccorr_without_gamma;
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("%s: disp_aosp_ccorr=%d, g_disp_ccorr_without_gamma=%d, g_ccorr_relay_value=%d, g_ccorr_8bit_switch=%d\n",
+		__func__, disp_aosp_ccorr, g_disp_ccorr_without_gamma,
+		g_ccorr_relay_value[index_of_ccorr(comp->id)],
+		g_ccorr_8bit_switch[index_of_ccorr(comp->id)]);
+	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_SIZE=0x%08x <-> 0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_SIZE), g_ccorr_size[index_of_ccorr(comp->id)]);
+#endif
 
 	disp_aosp_ccorr = true;
 	disp_ccorr_write_coef_reg(comp, handle, 0);
@@ -923,16 +1235,10 @@ int disp_ccorr_set_color_matrix(struct mtk_ddp_comp *comp,
 		}
 	}
 
-	for (i = 0; i < 3; i += 1) {
-		DDPINFO("g_ccorr_color_matrix[%d][0-2] = {%d, %d, %d}\n",
-				i,
-				g_ccorr_color_matrix[id][i][0],
-				g_ccorr_color_matrix[id][i][1],
-				g_ccorr_color_matrix[id][i][2]);
-	}
-
-	DDPINFO("g_disp_ccorr_without_gamma: [%d], need_refresh: [%d]\n",
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("g_disp_ccorr_without_gamma: [%d], need_refresh: [%d]\n",
 		g_disp_ccorr_without_gamma, need_refresh);
+#endif
 
 	mutex_unlock(&g_ccorr_global_lock);
 
@@ -940,12 +1246,16 @@ int disp_ccorr_set_color_matrix(struct mtk_ddp_comp *comp,
 		mtk_crtc_check_trigger(comp->mtk_crtc, false, false);
 
 	return ret;
+#else
+	return -EFAULT;
+#endif /* CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE */
 }
 
 int disp_ccorr_set_RGB_Gain(struct mtk_ddp_comp *comp,
 	struct cmdq_pkt *handle,
 	int r, int g, int b)
 {
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	int ret;
 	unsigned int id = index_of_ccorr(comp->id);
 
@@ -959,6 +1269,9 @@ int disp_ccorr_set_RGB_Gain(struct mtk_ddp_comp *comp,
 	mutex_unlock(&g_ccorr_global_lock);
 
 	return ret;
+#else
+	return 0;
+#endif /* CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE */
 }
 
 int mtk_drm_ioctl_set_ccorr(struct drm_device *dev, void *data,
@@ -1128,14 +1441,16 @@ int mtk_drm_ioctl_support_color_matrix(struct drm_device *dev, void *data,
 
 	for (i = 0 ; i < 3; i++) {
 		if (color_transform->matrix[i][3] != 0) {
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
 			for (i = 0 ; i < 4; i++) {
-				DDPINFO("unsupported:[%d][0-3]:[%d %d %d %d]",
+				pr_info("%s: unsupported:[%d][0-3]:[%d %d %d %d]", __func__,
 					i,
 					color_transform->matrix[i][0],
 					color_transform->matrix[i][1],
 					color_transform->matrix[i][2],
 					color_transform->matrix[i][3]);
 			}
+#endif
 			support_matrix = false;
 			ret = -EFAULT;
 			return ret;
@@ -1152,9 +1467,18 @@ int mtk_drm_ioctl_support_color_matrix(struct drm_device *dev, void *data,
 
 	//if only one ccorr and ccorr0 is linear, AOSP matrix unsupport
 	if ((disp_ccorr_number == 1) && (disp_ccorr_linear&0x01)
-		&& (!identity_matrix) && (!g_prim_ccorr_force_linear))
+		&& (!identity_matrix) && (!g_prim_ccorr_force_linear)) {
 		ret = -EFAULT;
-	else
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_VDEBUG
+		for (i = 0 ; i < 3; i++) {
+			pr_info("%s: unsupported:[%d][0-2]:[%d %d %d]", __func__,
+				i,
+				color_transform->matrix[i][0],
+				color_transform->matrix[i][1],
+				color_transform->matrix[i][2]);
+		}
+#endif
+	} else
 		ret = 0;
 
 	return ret;
@@ -1180,6 +1504,7 @@ static void mtk_ccorr_config(struct mtk_ddp_comp *comp,
 			     struct mtk_ddp_config *cfg,
 			     struct cmdq_pkt *handle)
 {
+	unsigned int index = index_of_ccorr(comp->id);
 	unsigned int width;
 
 	if (comp->mtk_crtc->is_dual_pipe)
@@ -1196,15 +1521,23 @@ static void mtk_ccorr_config(struct mtk_ddp_comp *comp,
 	else
 		DDPINFO("Disp CCORR's bit is : %u\n", cfg->bpc);
 
+#if 0
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		       comp->regs_pa + DISP_REG_CCORR_SIZE,
 		       (width << 16) | cfg->h, ~0);
+#else
+	g_ccorr_size[index] = (width << 16) | cfg->h;
+	cmdq_pkt_write(handle, comp->cmdq_base,
+		       comp->regs_pa + DISP_REG_CCORR_SIZE,
+		       g_ccorr_size[index], ~0);
+#endif
 
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("DISP-CCORR: %s: width=0x%04x, cfg->w=0x%04x, cfg->h=0x%04x, cfg->source_bpc=%d => 0x%08x\n",
+			__func__, width, cfg->w, cfg->h, cfg->source_bpc, g_ccorr_size[index]);
 	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
-	pr_info("DISP-CCORR: DISP_REG_CCORR_SIZE=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_SIZE));
-	pr_info("DISP-CCORR: DISP_REG_CCORR_CFG=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_CFG));
+	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_SIZE=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_SIZE));
+	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_CFG=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_CFG));
 	pr_info("DISP-CCORR: CCORR_REG(0)=0x%08x\n", readl(comp->regs + CCORR_REG(0)));
 	pr_info("DISP-CCORR: CCORR_REG(1)=0x%08x\n", readl(comp->regs + CCORR_REG(1)));
 	pr_info("DISP-CCORR: CCORR_REG(2)=0x%08x\n", readl(comp->regs + CCORR_REG(2)));
@@ -1215,96 +1548,10 @@ static void mtk_ccorr_config(struct mtk_ddp_comp *comp,
 	pr_info("DISP-CCORR: DISP_REG_CCORR_COLOR_OFFSET_2=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_COLOR_OFFSET_2));
 #endif
 
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	/* CAN NOT bypass CCORR */
 	g_ccorr_relay_value[index_of_ccorr(comp->id)] = 0;
-
-	/**
-	 * disp_ccorr0: disp_ccorr0@1400b000 {
-	 * ......
-	 *     ccorr_bit = <13>;
-	 * ......
-	 * };
-	 * 
-	 * disp_ccorr_caps.ccorr_bit = 13
-	 *
-	 * CCORR_Identity_Value = 2 ^ (ccorr_bit - 2) = 2^11 = 2048
-	 *
-	 * transFloatToIntForColorMatrix:
-	 *     static_cast<int32_t>(val * CCORR_Identity_Value + 0.5f);
-	 *
-	 *
-	 * Solution 1 (Android adopts this): Y = 0.2126 R + 0.7152 G + 0.0722 B
-	 * 
-	 * private static final float[] MATRIX_GRAYSCALE = new float[]{
-	 *     .2126f, .2126f, .2126f, 0f,
-	 *     .7152f, .7152f, .7152f, 0f,
-	 *     .0722f, .0722f, .0722f, 0f,
-	 *     0f, 0f, 0f, 1f
-	 * };
-	 *
-	 * transFloatToIntForColorMatrix:
-	 *     .2126f => RoundDown(0.2126 * 2048 + 0.5)=RoundDown(435.9048)=435=0x01b3
-	 *     .7152f => RoundDown(0.7152 * 2048 + 0.5)=RoundDown(1465.2296)=1465=0x05b9
-	 *     .0722f => RoundDown(0.0722 * 2048 + 0.5)=RoundDown(148.3656)=148=0x0094
-	 *
-	 * Sanity check: 435+1465+148=2048 => OK
-	 *
-	 * coef[0][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
-	 * coef[1][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
-	 * coef[2][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
-	 *
-	 *
-	 * Solution 2: Y = 0.299 R + 0.587 G + 0.114 B
-	 *
-	 * transFloatToIntForColorMatrix:
-	 *     .299f => RoundDown(0.299 * 2048 + 0.5)=RoundDown(612.852)=612=0x0264
-	 *     .587f => RoundDown(0.587 * 2048 + 0.5)=RoundDown(1202.676)=1202=0x04b2
-	 *     .114f => RoundDown(0.114 * 2048 + 0.5)=RoundDown(233.972)=233=0x00e9
-	 *
-	 * Sanity check: 612+1202+233=2047 => FAILED
-	 *     Review the Int value again:
-	 *          NEW: 612+1202+234=2048 => OK
-	 *     .114f => RoundDown(0.114 * 2048 + 0.5)=RoundDown(233.972)=233 => 233+1=234=0x00ea
-	 *
-	 * coef[0][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
-	 * coef[1][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
-	 * coef[2][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
-	 */
-	/* g_ccorr_8bit_switch=0; g_disp_ccorr_without_gamma=0 */
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + DISP_REG_CCORR_CFG, 0x0002, ~0);
-#if 1
-	pr_info("DISP-CCORR: %s: force grayscale 1\n", __func__);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(0), 0x01b305b9, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(1), 0x009401b3, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(2), 0x05b90094, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(3), 0x01b305b9, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(4), 0x00940000, ~0);
-#else
-	pr_info("DISP-CCORR: %s: force grayscale 2\n", __func__);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(0), 0x026404b2, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(1), 0x00ea0264, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(2), 0x04b200ea, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(3), 0x026404b2, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + CCORR_REG(4), 0x00ea0000, ~0);
-#endif
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_0, 0 /*(0x1 << 31)*/, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_1, 0, ~0);
-	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_2, 0, ~0);
-#endif
+#endif /* CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE */
 }
 
 static void mtk_ccorr_start(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle)
@@ -1331,6 +1578,14 @@ static void mtk_ccorr_start(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle)
 		g_disp_ccorr_without_gamma = g_disp_ccorr_temp_linear;
 	}
 
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("%s: disp_aosp_ccorr=%d, g_disp_ccorr_without_gamma=%d, g_ccorr_relay_value=%d, g_ccorr_8bit_switch=%d\n",
+		__func__, disp_aosp_ccorr, g_disp_ccorr_without_gamma,
+		g_ccorr_relay_value[index_of_ccorr(comp->id)],
+		g_ccorr_8bit_switch[index_of_ccorr(comp->id)]);
+	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_SIZE=0x%08x <-> 0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_SIZE), g_ccorr_size[index_of_ccorr(comp->id)]);
+#endif
+
 	disp_ccorr_write_coef_reg(comp, handle, 1);
 
 	cmdq_pkt_write(handle, comp->cmdq_base,
@@ -1342,11 +1597,11 @@ static void mtk_ccorr_bypass(struct mtk_ddp_comp *comp, int bypass,
 {
 	DDPINFO("%s\n", __func__);
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("DISP-CCORR: %s: bypass: 0 (arg bypass=%d)\n", __func__, bypass);
+#endif
 	/* CAN NOT bypass CCORR */
 	bypass = 0;
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-CCORR: %s: bypass: 0\n", __func__);
-#endif
 #endif
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		       comp->regs_pa + DISP_REG_CCORR_CFG, bypass, 0x1);
@@ -1360,6 +1615,7 @@ static int mtk_ccorr_user_cmd(struct mtk_ddp_comp *comp,
 	switch (cmd) {
 	case SET_CCORR:
 	{
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 		struct DRM_DISP_CCORR_COEF_T *config = data;
 		struct mtk_disp_ccorr *ccorr = comp_to_ccorr(comp);
 
@@ -1381,7 +1637,12 @@ static int mtk_ccorr_user_cmd(struct mtk_ddp_comp *comp,
 				return -EFAULT;
 			}
 		}
-
+#else
+		if (atomic_read(&g_ccorr_is_clock_on[index_of_ccorr(comp->id)]) == 1) {
+			disp_ccorr_write_coef_reg(comp, handle, 1);
+			mtk_crtc_check_trigger(comp->mtk_crtc, false, false);
+		}
+#endif
 	}
 	break;
 
@@ -1404,6 +1665,7 @@ static int mtk_ccorr_user_cmd(struct mtk_ddp_comp *comp,
 	break;
 
 	case BYPASS_CCORR:
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	{
 		int *value = data;
 		int i, ccorr_num = 1;
@@ -1433,6 +1695,7 @@ static int mtk_ccorr_user_cmd(struct mtk_ddp_comp *comp,
 				mtk_ccorr_bypass(comp_ccorr[i], *value, handle);
 		}
 	}
+#endif
 	break;
 
 	default:
@@ -1447,6 +1710,9 @@ struct ccorr_backup {
 	unsigned int REG_CCORR_INTEN;
 };
 static struct ccorr_backup g_ccorr_backup[DISP_CCORR_TOTAL];
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+static bool ccorr_run_restore[DISP_CCORR_TOTAL];
+#endif
 
 static void ddp_ccorr_backup(struct mtk_ddp_comp *comp)
 {
@@ -1456,6 +1722,14 @@ static void ddp_ccorr_backup(struct mtk_ddp_comp *comp)
 			readl(comp->regs + DISP_REG_CCORR_CFG);
 	g_ccorr_backup[index].REG_CCORR_INTEN =
 			readl(comp->regs + DISP_REG_CCORR_INTEN);
+//#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+//	g_ccorr_size[index] = readl(comp->regs + DISP_REG_CCORR_SIZE);
+//#endif
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_SIZE=0x%08x\n", __func__, g_ccorr_size[index]);
+	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_CFG=0x%08x\n", __func__, g_ccorr_backup[index].REG_CCORR_CFG);
+#endif
 }
 
 static void ddp_ccorr_restore(struct mtk_ddp_comp *comp)
@@ -1466,6 +1740,8 @@ static void ddp_ccorr_restore(struct mtk_ddp_comp *comp)
 			comp->regs + DISP_REG_CCORR_CFG);
 	writel(g_ccorr_backup[index].REG_CCORR_INTEN,
 			comp->regs + DISP_REG_CCORR_INTEN);
+	if (g_ccorr_size[index])
+		writel(g_ccorr_size[index], comp->regs + DISP_REG_CCORR_SIZE);
 }
 
 static void mtk_ccorr_prepare(struct mtk_ddp_comp *comp)
@@ -1482,16 +1758,28 @@ static void mtk_ccorr_prepare(struct mtk_ddp_comp *comp)
 		mtk_ddp_write_mask_cpu(comp, CCORR_BYPASS_SHADOW,
 			DISP_REG_CCORR_SHADOW, CCORR_BYPASS_SHADOW);
 
-#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
-	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_CFG=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_CFG));
+	pr_info("DISP-CCORR: %s[0]: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
+	pr_info("DISP-CCORR: %s[0]: DISP_REG_CCORR_SIZE=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_SIZE));
+	pr_info("DISP-CCORR: %s[0]: DISP_REG_CCORR_CFG=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_CFG));
 #endif
 
-	if (!(readl(comp->regs + DISP_REG_CCORR_EN) & 0x1))
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+	if (ccorr_run_restore[index_of_ccorr(comp->id)])
 		ddp_ccorr_restore(comp);
+	else {
+		if (!(readl(comp->regs + DISP_REG_CCORR_EN) & 0x1))
+			ddp_ccorr_restore(comp);
+		ccorr_run_restore[index_of_ccorr(comp->id)] = true;
+	}
 #else
 	ddp_ccorr_restore(comp);
+#endif
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+	pr_info("DISP-CCORR: %s[1]: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
+	pr_info("DISP-CCORR: %s[1]: DISP_REG_CCORR_SIZE=0x%08x <-> 0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_SIZE), g_ccorr_size[index_of_ccorr(comp->id)]);
+	pr_info("DISP-CCORR: %s[1]: DISP_REG_CCORR_CFG=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_CFG));
 #endif
 }
 
@@ -1501,8 +1789,8 @@ static void mtk_ccorr_unprepare(struct mtk_ddp_comp *comp)
 
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
 	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
-	pr_info("DISP-CCORR: DISP_REG_CCORR_SIZE=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_SIZE));
-	pr_info("DISP-CCORR: DISP_REG_CCORR_CFG=0x%08x\n", readl(comp->regs + DISP_REG_CCORR_CFG));
+	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_SIZE=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_SIZE));
+	pr_info("DISP-CCORR: %s: DISP_REG_CCORR_CFG=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_CFG));
 	pr_info("DISP-CCORR: CCORR_REG(0)=0x%08x\n", readl(comp->regs + CCORR_REG(0)));
 	pr_info("DISP-CCORR: CCORR_REG(1)=0x%08x\n", readl(comp->regs + CCORR_REG(1)));
 	pr_info("DISP-CCORR: CCORR_REG(2)=0x%08x\n", readl(comp->regs + CCORR_REG(2)));
@@ -1600,7 +1888,9 @@ void mtk_ccorr_dump(struct mtk_ddp_comp *comp)
 
 static int  mtk_update_ccorr_base(void)
 {
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	int g, i, j;
+#endif
 
 	if (disp_ccorr_caps.ccorr_bit == 12)
 		return 0;
@@ -1611,6 +1901,7 @@ static int  mtk_update_ccorr_base(void)
 	ccorr_fullbit_mask = 0x1fff;
 	ccorr_offset_mask = 13;
 
+#ifndef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	for (g = 0; g < DISP_CCORR_TOTAL; g++)
 		for (i = 0; i < 3; i++)
 			for (j = 0; j < 3; j++) {
@@ -1620,6 +1911,7 @@ static int  mtk_update_ccorr_base(void)
 					g_rgb_matrix[g][i][j] = ccorr_offset_base;
 				}
 			}
+#endif
 	return 0;
 }
 
@@ -1660,6 +1952,206 @@ static void mtk_get_ccorr_property(struct device_node *node)
 
 }
 
+#if defined(CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE) && IS_ENABLED(CONFIG_DEBUG_FS)
+static int ccorr_grayscale_color_matrix_show(struct seq_file *file, void *v)
+{
+	struct mtk_disp_ccorr *disp_ccorr = (struct mtk_disp_ccorr *)file->private;
+	int i;
+	int coef_rgb[3], sum/*, coef*/;
+	
+	if (!disp_ccorr) {
+		seq_puts(file, "can not get mtk_disp_ccorr!\n");
+		return 0;
+	}
+
+	seq_puts(file,       "* RGB-to-Grayscale Color Transform Matrix:\n");
+	seq_puts(file,       "            |r r r|\n");
+	seq_puts(file,       "  |R G B| x |g g g| = |R' G' B'|\n");
+	seq_puts(file,       "            |b b b|\n");
+	seq_puts(file,       "  ** R' = G' = B' = r x R + g x G + b x B\n");
+	seq_puts(file,       "  ** An example:\n");
+	seq_puts(file,       "     *** R' = G' = B' = 0.299 x R + 0.587 x G + 0.114 x B\n");
+	seq_puts(file,       "        **** r = 0.299 => r' = 10000 x r = 2990\n");
+	seq_puts(file,       "        **** g = 0.587 => g' = 10000 x g = 5870\n");
+	seq_puts(file,       "        **** b = 0.114 => b' = 10000 x b = 1140\n");
+	seq_puts(file,       "        **** Using r'/g'/b' as the input integer values: \"r' g' b'\"\n");
+	seq_puts(file,       "             # echo \"2990 5870 1140\" > /d/grayscale_color_matrix\n");
+	seq_puts(file,       "        **** Checking the result:\n");
+	seq_puts(file,       "             # cat /d/grayscale_color_matrix\n");
+	seq_puts(file,       "  ** The integer value range of r'/g'/b': -20000 <= r'/g'/b' <= 20000\n");
+	seq_puts(file,       "     *** The negative integer value means the color inversion\n");
+	seq_puts(file,       "  ** (r' + g' + b') > 0\n");
+
+	seq_printf(file, "\n\n* Last stored Color Matrix \"r' g' b'\": \"%04d %04d %04d\"\n",
+			disp_ccorr->stored_color_matrix_rgb[0],
+			disp_ccorr->stored_color_matrix_rgb[1],
+			disp_ccorr->stored_color_matrix_rgb[2]);
+	if (CCORR_ABS(disp_ccorr->stored_color_matrix_rgb[0]) > 20000)
+		seq_printf(file, "  ** ERR: -20000 <= (r'=%d) <= 20000\n",
+			disp_ccorr->stored_color_matrix_rgb[0]);
+	if (CCORR_ABS(disp_ccorr->stored_color_matrix_rgb[1]) > 20000)
+		seq_printf(file, "  ** ERR: -20000 <= (g'=%d) <= 20000\n",
+			disp_ccorr->stored_color_matrix_rgb[1]);
+	if (CCORR_ABS(disp_ccorr->stored_color_matrix_rgb[2]) > 20000)
+		seq_printf(file, "  ** ERR: -20000 <= (b'=%d) <= 20000\n",
+			disp_ccorr->stored_color_matrix_rgb[2]);
+
+	sum = disp_ccorr->stored_color_matrix_rgb[0] +
+			disp_ccorr->stored_color_matrix_rgb[1] +
+			disp_ccorr->stored_color_matrix_rgb[2];
+	if (sum <= 0)
+		seq_printf(file, "  ** ERR: ((r'=%d) + (g'=%d) + (b'=%d) = %d) > 0\n",
+			disp_ccorr->stored_color_matrix_rgb[0],
+			disp_ccorr->stored_color_matrix_rgb[1],
+			disp_ccorr->stored_color_matrix_rgb[2],
+			sum);
+
+	seq_puts(file,   "\n\n* Current active/working Color Matrix\n\n");
+	seq_printf(file,     "  ** Color Matrix \"r' g' b'\" integer (rgb float value x 10000): \"%04d %04d %04d\"\n",
+			disp_ccorr->grayscale_color_matrix[0][0],
+			disp_ccorr->grayscale_color_matrix[1][1],
+			disp_ccorr->grayscale_color_matrix[2][2]);
+	seq_puts(file,       "  ** Color Transform:\n");
+	seq_printf(file,     "     R' = G' = B' = %c%d.%04d x R + %c%d.%04d x G + %c%d.%04d x B\n",
+			disp_ccorr->grayscale_color_matrix[0][0] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[0][0]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[0][0]) % 10000,
+			disp_ccorr->grayscale_color_matrix[1][1] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[1][1]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[1][1]) % 10000,
+			disp_ccorr->grayscale_color_matrix[2][2] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[2][2]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[2][2]) % 10000);
+	seq_puts(file,       "  ** 3x3 Color Transform Matrix:\n");
+	for (i = 0; i < 3; i++) {
+		seq_printf(file, "     [%d][0-2] = {%c%d.%04d, %c%d.%04d, %c%d.%04d}\n", i,
+			disp_ccorr->grayscale_color_matrix[i][0] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][0]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][0]) % 10000,
+			disp_ccorr->grayscale_color_matrix[i][1] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][1]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][1]) % 10000,
+			disp_ccorr->grayscale_color_matrix[i][2] < 0 ? '-' : ' ',
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][2]) / 10000,
+			CCORR_ABS(disp_ccorr->grayscale_color_matrix[i][2]) % 10000);
+	}
+
+	coef_rgb[0] = (int)disp_ccorr->grayscale_ccorr_coef.coef[0][0];
+	if (coef_rgb[0] > ccorr_max_positive) /* check negative */
+		coef_rgb[0] -= (ccorr_offset_base<<2);
+	coef_rgb[1] = (int)disp_ccorr->grayscale_ccorr_coef.coef[1][1];
+	if (coef_rgb[1] > ccorr_max_positive) /* check negative */
+		coef_rgb[1] -= (ccorr_offset_base<<2);
+	coef_rgb[2] = (int)disp_ccorr->grayscale_ccorr_coef.coef[2][2];
+	if (coef_rgb[2] > ccorr_max_positive) /* check negative */
+		coef_rgb[2] -= (ccorr_offset_base<<2);
+
+	seq_printf(file,     "  ** Color Matrix to MTK DISP-CCORR COEF Conversion: (float value 1.0 -> %d)\n",
+			ccorr_offset_base);
+	seq_printf(file,     "     ** COEF-R = DIV_ROUND_CLOSEST(r' x %d, 10000) = %d\n",
+			ccorr_offset_base, coef_rgb[0]);
+	seq_printf(file,     "     ** COEF-G = DIV_ROUND_CLOSEST(g' x %d, 10000) = %d\n",
+			ccorr_offset_base, coef_rgb[1]);
+	seq_printf(file,     "     ** COEF-B = DIV_ROUND_CLOSEST(b' x %d, 10000) = %d\n",
+			ccorr_offset_base, coef_rgb[2]);
+
+	seq_printf(file,     "  ** MTK DISP-CCORR 3x3 COEF: (%d <= COEF <= %d)\n",
+		ccorr_max_negative, ccorr_max_positive, ccorr_offset_base);
+	for (i = 0; i < 3; i += 1) {
+		seq_printf(file, "     [%d][0-2] = {0x%04x, 0x%04x, 0x%04x} = {%04d, %04d, %04d}\n", i,
+			disp_ccorr->grayscale_ccorr_coef.coef[i][0],
+			disp_ccorr->grayscale_ccorr_coef.coef[i][1],
+			disp_ccorr->grayscale_ccorr_coef.coef[i][2],
+			coef_rgb[0], coef_rgb[1], coef_rgb[2]);
+	}
+
+	seq_puts(file, "\n\n");
+
+	return 0;
+}
+
+static ssize_t ccorr_grayscale_color_matrix_write(struct file *file, const char __user *ubuf,
+		size_t count, loff_t *ppos)
+{
+	struct mtk_disp_ccorr *disp_ccorr;
+	char buf[64];
+	struct mtk_ddp_comp *comp;
+	struct device *dev;
+	unsigned int index;
+	int ret;
+	int color_matrix_r = 0, color_matrix_g = 0, color_matrix_b = 0;
+
+	disp_ccorr = (struct mtk_disp_ccorr *)
+		(((struct seq_file *)file->private_data)->private);
+	if (!disp_ccorr) {
+		pr_err("%s: can not get mtk_disp_ccorr\n", __func__);
+		return -EINVAL;
+	}
+
+	if (count == 0)
+		return -EINVAL;
+	if (count > 63)
+		count = 63;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EINVAL;
+
+	comp = &disp_ccorr->ddp_comp;
+	index = index_of_ccorr(comp->id);
+	dev = comp->dev;
+
+	ret = sscanf(buf, "%d %d %d", &color_matrix_r, &color_matrix_g, &color_matrix_b);
+	if (ret != 3) {
+		dev_err(dev, "%s: invalid format (%d %d %d)!\n", __func__,
+			color_matrix_r, color_matrix_g, color_matrix_b);
+		return -EINVAL;
+	}
+
+	mutex_lock(&g_ccorr_global_lock);
+
+	ret = disp_ccorr_grayscale_calc(disp_ccorr, color_matrix_r, color_matrix_g, color_matrix_b);
+	if (ret) {
+		mutex_unlock(&g_ccorr_global_lock);
+
+		dev_err(dev, "%s: calculate the grayscale color matrix error: %d\n", __func__, ret);
+		return ret;
+	}
+
+	if (atomic_read(&g_ccorr_is_clock_on[index]) == 1) {
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
+		pr_info("%s: disp_aosp_ccorr=%d, g_disp_ccorr_without_gamma=%d, g_ccorr_relay_value=%d, g_ccorr_8bit_switch=%d\n",
+			__func__, disp_aosp_ccorr, g_disp_ccorr_without_gamma,
+			g_ccorr_relay_value[index_of_ccorr(comp->id)],
+			g_ccorr_8bit_switch[index_of_ccorr(comp->id)]);
+		pr_info("DISP-CCORR: %s: DISP_REG_CCORR_SIZE=0x%08x <-> 0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_SIZE), g_ccorr_size[index_of_ccorr(comp->id)]);
+#endif
+		(void)disp_ccorr_write_coef_reg(comp, NULL, 0);
+	}
+
+	mutex_unlock(&g_ccorr_global_lock);
+
+	if (atomic_read(&g_ccorr_is_clock_on[index]) == 1)
+		mtk_crtc_check_trigger(comp->mtk_crtc, false, false);
+
+	return count;
+}
+
+static int ccorr_grayscale_color_matrix_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ccorr_grayscale_color_matrix_show, inode->i_private);
+}
+
+static struct dentry *debugfs_ccorr_grayscale_color_matrix;
+
+static const struct file_operations ccorr_grayscale_color_matrix_fops = {
+	.open		= ccorr_grayscale_color_matrix_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= ccorr_grayscale_color_matrix_write,
+};
+#endif
+
 static int mtk_disp_ccorr_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1691,6 +2183,71 @@ static int mtk_disp_ccorr_probe(struct platform_device *pdev)
 		g_prim_ccorr_force_linear = false;
 		g_prim_ccorr_pq_nonlinear = false;
 		mtk_get_ccorr_property(dev->of_node);
+
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+		/* after mtk_get_ccorr_property() & mtk_update_ccorr_base() */
+		if (true/*comp_id == DDP_COMPONENT_CCORR0*/) {
+			/**
+			 * disp_ccorr0: disp_ccorr0@1400b000 {
+			 * ......
+			 *     ccorr_bit = <13>;
+			 * ......
+			 * };
+			 * 
+			 * disp_ccorr_caps.ccorr_bit = 13
+			 *
+			 * CCORR_Identity_Value = 2 ^ (ccorr_bit - 2) = 2^11 = 2048
+			 *
+			 * transFloatToIntForColorMatrix:
+			 *     static_cast<int32_t>(val * CCORR_Identity_Value + 0.5f);
+			 *
+			 *
+			 * Solution 1 (Android adopts this): Y = 0.2126 R + 0.7152 G + 0.0722 B
+			 * 
+			 * private static final float[] MATRIX_GRAYSCALE = new float[]{
+			 *     .2126f, .2126f, .2126f, 0f,
+			 *     .7152f, .7152f, .7152f, 0f,
+			 *     .0722f, .0722f, .0722f, 0f,
+			 *     0f, 0f, 0f, 1f
+			 * };
+			 *
+			 * transFloatToIntForColorMatrix:
+			 *     .2126f => RoundDown(0.2126 * 2048 + 0.5)=RoundDown(435.9048)=435=0x01b3
+			 *     .7152f => RoundDown(0.7152 * 2048 + 0.5)=RoundDown(1465.2296)=1465=0x05b9
+			 *     .0722f => RoundDown(0.0722 * 2048 + 0.5)=RoundDown(148.3656)=148=0x0094
+			 *
+			 * Sanity check: 435+1465+148=2048 => OK
+			 *
+			 * coef[0][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
+			 * coef[1][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
+			 * coef[2][0-2] = {435, 1465, 148} -> {0x01b3, 0x05b9, 0x0094}
+			 *
+			 *
+			 * Solution 2: Y = 0.299 R + 0.587 G + 0.114 B
+			 *
+			 * transFloatToIntForColorMatrix:
+			 *     .299f => RoundDown(0.299 * 2048 + 0.5)=RoundDown(612.852)=612=0x0264
+			 *     .587f => RoundDown(0.587 * 2048 + 0.5)=RoundDown(1202.676)=1202=0x04b2
+			 *     .114f => RoundDown(0.114 * 2048 + 0.5)=RoundDown(233.972)=233=0x00e9
+			 *
+			 * Sanity check: 612+1202+233=2047 => FAILED
+			 *     Review the Int value again:
+			 *          NEW: 612+1202+234=2048 => OK
+			 *     .114f => RoundDown(0.114 * 2048 + 0.5)=RoundDown(233.972)=233 => 233+1=234=0x00ea
+			 *
+			 * coef[0][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
+			 * coef[1][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
+			 * coef[2][0-2] = {612, 1202, 234} -> {0x0264, 0x04b2, 0x00ea}
+			 */
+
+			/* Solution 1 (Android adopts this): Y = 0.2126 R + 0.7152 G + 0.0722 B */
+			ret = disp_ccorr_grayscale_calc(priv, 2126, 7152, 722);
+			if (ret) {
+				DDPPR_ERR("calculate the grayscale color matrix error: %d\n", ret);
+				return ret;
+			}
+		}
+#endif
 	}
 
 	if (!default_comp && comp_id == DDP_COMPONENT_CCORR0)
@@ -1720,6 +2277,15 @@ static int mtk_disp_ccorr_probe(struct platform_device *pdev)
 	if (ret != 0) {
 		dev_err(dev, "Failed to add component: %d\n", ret);
 		mtk_ddp_comp_pm_disable(&priv->ddp_comp);
+#if defined(CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE) && IS_ENABLED(CONFIG_DEBUG_FS)
+	} else if (comp_id == DDP_COMPONENT_CCORR0) {
+		debugfs_ccorr_grayscale_color_matrix =
+			debugfs_create_file("grayscale_color_matrix",
+					0644, NULL, priv,
+					&ccorr_grayscale_color_matrix_fops);
+		if (!debugfs_ccorr_grayscale_color_matrix)
+			dev_err(dev, "failed to create debugfs\n");
+#endif
 	}
 
 #ifdef CONFIG_LEDS_BRIGHTNESS_CHANGED
@@ -1734,6 +2300,13 @@ static int mtk_disp_ccorr_probe(struct platform_device *pdev)
 static int mtk_disp_ccorr_remove(struct platform_device *pdev)
 {
 	struct mtk_disp_ccorr *priv = dev_get_drvdata(&pdev->dev);
+
+#if defined(CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE) && IS_ENABLED(CONFIG_DEBUG_FS)
+	if (priv->ddp_comp.id == DDP_COMPONENT_CCORR0 && debugfs_ccorr_grayscale_color_matrix) {
+		debugfs_remove(debugfs_ccorr_grayscale_color_matrix);
+		debugfs_ccorr_grayscale_color_matrix = NULL;
+	}
+#endif
 
 	component_del(&pdev->dev, &mtk_disp_ccorr_component_ops);
 	mtk_ddp_comp_pm_disable(&priv->ddp_comp);
@@ -1872,7 +2445,7 @@ void disp_ccorr_set_bypass(struct drm_crtc *crtc, int bypass)
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	/* CAN NOT bypass CCORR (internal used) */
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
-	pr_info("DISP-CCORR: %s: bypass: 0 (internal used)\n", __func__);
+	pr_info("DISP-CCORR: %s: bypass: 0 (internal used) (arg bypass=%d)\n", __func__, bypass);
 #endif
 #else
 	int ret;

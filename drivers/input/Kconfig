@@ -185,6 +185,12 @@ config INPUT_APMPOWER
 	  To compile this driver as a module, choose M here: the
 	  module will be called apm-power.
 
+config SENSORS_HALL
+	tristate "Hall sensor"
+	help
+	  Say y here if you want to use this hall sensor driver, it
+	  is like a switch. For example, lid.
+
 comment "Input Device Drivers"
 
 source "drivers/input/keyboard/Kconfig"

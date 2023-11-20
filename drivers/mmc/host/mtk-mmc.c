@@ -2545,10 +2545,11 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 		 * but sometimes it may fail. To make sure the parameters are
 		 * more stable, we test each set of parameters 3 times.
 		 */
+		cmd_err = 0;
 		for (j = 0; j < 3; j++) {
 			//mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (opcode != MMC_SEND_STATUS)
-				cmd_err = mmc_send_tuning(mmc, opcode, NULL);
+				mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (!cmd_err) {
 				rise_delay |= (1 << i);
 			} else {
@@ -2571,8 +2572,9 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 		 * but sometimes it may fail. To make sure the parameters are
 		 * more stable, we test each set of parameters 3 times.
 		 */
+		cmd_err = 0;
 		for (j = 0; j < 3; j++) {
-			cmd_err = mmc_send_tuning(mmc, opcode, NULL);
+			mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (!cmd_err) {
 				fall_delay |= (1 << i);
 			} else {
@@ -2608,8 +2610,9 @@ skip_fall:
 		 * but sometimes it may fail. To make sure the parameters are
 		 * more stable, we test each set of parameters 3 times.
 		 */
+		cmd_err = 0;
 		for (j = 0 ; j < 3; j++) {
-			cmd_err = mmc_send_tuning(mmc, opcode, NULL);
+			mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (!cmd_err)
 				internal_delay |= (1 << i);
 			else {
@@ -2618,13 +2621,14 @@ skip_fall:
 			}
 		}
 	}
-	dev_alert(host->dev, "Final internal %s delay: 0x%x\n",
-			use_rise ? "rising" : "falling", internal_delay);
+	dev_alert(host->dev, "Final internal delay: 0x%x\n", internal_delay);
 	internal_delay_phase = get_best_delay(host, internal_delay);
 	sdr_set_field(host->base + tune_reg, MSDC_PAD_TUNE_CMDRRDLY,
 		      internal_delay_phase.final_phase);
 skip_internal:
-	dev_alert(host->dev, "Final cmd pad delay: 0x%x\n", final_delay);
+	dev_alert(host->dev, "Final cmd pad %s delay: 0x%x [map:%08x]\n",
+			use_rise ? "rising" : "falling", final_delay,
+			use_rise ? rise_delay : fall_delay);
 	return final_delay == 0xff ? -EIO : 0;
 }
 
@@ -2659,8 +2663,9 @@ static int hs400_tune_response(struct mmc_host *mmc, u32 opcode)
 		 * but sometimes it may fail. To make sure the parameters are
 		 * more stable, we test each set of parameters 3 times.
 		 */
+		cmd_err = 0;
 		for (j = 0; j < 3; j++) {
-			cmd_err = mmc_send_tuning(mmc, opcode, NULL);
+			mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (!cmd_err) {
 				cmd_delay |= (1 << i);
 			} else {
@@ -2749,8 +2754,9 @@ skip_fall:
 	}
 	msdc_set_data_delay(host, final_delay);
 
-	dev_alert(host->dev, "Final data pad %s delay: 0x%x\n",
-			use_rise ? "rising" : "falling", final_delay);
+	dev_alert(host->dev, "Final data pad %s delay: 0x%x [map:%08x]\n",
+			use_rise ? "rising" : "falling", final_delay,
+			use_rise ? rise_delay : fall_delay);
 	return final_delay == 0xff ? -EIO : 0;
 }
 
@@ -2838,8 +2844,9 @@ skip_fall:
 	msdc_set_cmd_delay(host, final_delay);
 	msdc_set_data_delay(host, final_delay);
 
-	dev_alert(host->dev, "Final pad %s delay: 0x%x\n",
-			use_rise ? "rising" : "falling", final_delay);
+	dev_alert(host->dev, "Final pad %s delay: 0x%x [map:%08x]\n",
+			use_rise ? "rising" : "falling", final_delay,
+			use_rise ? rise_delay : fall_delay);
 	return final_delay == 0xff ? -EIO : 0;
 }
 #endif
@@ -3720,13 +3727,14 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	host = mmc_priv(mmc);
+	host->dev = &pdev->dev;
 	ret = mmc_of_parse(mmc);
 	if (ret)
 		goto host_free;
 
 	/* Support to rollback to the default signal voltage. */
 	if (device_property_read_bool(mmc->parent, "sd-poweroff-reset-signal-volt")) {
-		dev_dbg(host->dev, "%s: sd-poweroff-reset-signal-volt\n", __func__);
+		dev_dbg(&pdev->dev, "%s: sd-poweroff-reset-signal-volt\n", __func__);
 		host->sd_poweroff_reset_signal_volt = true;
 	}
 
@@ -3832,7 +3840,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		INIT_WORK(&host->sd_oc.work, sdcard_oc_handler);
 	}
 
-	host->dev = &pdev->dev;
+	//host->dev = &pdev->dev;
 	host->dev_comp = of_device_get_match_data(&pdev->dev);
 #if !IS_ENABLED(CONFIG_FPGA_EARLY_PORTING)
 	host->src_clk_freq = clk_get_rate(host->src_clk);

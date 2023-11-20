@@ -3900,23 +3900,21 @@ static kal_uint32 set_test_pattern_mode(struct subdrv_ctx *ctx, kal_uint32 mode)
 	if (mode != ctx->test_pattern)
 		pr_debug("mode %d -> %d\n", ctx->test_pattern, mode);
 	//1:Solid Color 2:Color bar 5:Black
-	if (mode == 5) {
-		write_cmos_sensor(ctx, 0x0B04, 0x8001);
-		write_cmos_sensor(ctx, 0x0C0A, 0x0202);
-	} else if (mode) {
-		write_cmos_sensor(ctx, 0x0B04, 0x8001);
-		write_cmos_sensor(ctx, 0x0C0A, 0x0202);
+
+	if (mode == 5) { //black Color
+		write_cmos_sensor(ctx, 0x0B04, 0x00DD);
+		write_cmos_sensor(ctx, 0x0C0A, 0x0100);
+	} else if (mode == 2) {
+		write_cmos_sensor(ctx, 0x0B04, 0x00DD);
+		write_cmos_sensor(ctx, 0x0C0A, 0x0200);
 	}
 
 	if ((ctx->test_pattern) && (mode != ctx->test_pattern)) {
-		if (ctx->test_pattern == 5) {
-			write_cmos_sensor(ctx, 0x0B04, 0x8001);
-			write_cmos_sensor(ctx, 0x0C0A, 0x0202);
-		} else if (mode == 0) {
-			write_cmos_sensor(ctx, 0x0B04, 0x8000);
-			write_cmos_sensor(ctx, 0x0C0A, 0x0000);
-		}
+		if (mode == 0) {
+			write_cmos_sensor(ctx, 0x0B04, 0x00DC);
+		}/*No pattern*/
 	}
+
 	ctx->test_pattern = mode;
 	return ERROR_NONE;
 }
@@ -3940,8 +3938,8 @@ static int feature_control(struct subdrv_ctx *ctx, MSDK_SENSOR_FEATURE_ENUM feat
 	/* SET_SENSOR_AWB_GAIN *pSetSensorAWB
 	 *  = (SET_SENSOR_AWB_GAIN *)feature_para;
 	 */
-//	MSDK_SENSOR_REG_INFO_STRUCT *sensor_reg_data
-//		= (MSDK_SENSOR_REG_INFO_STRUCT *) feature_para;
+	MSDK_SENSOR_REG_INFO_STRUCT *sensor_reg_data
+		= (MSDK_SENSOR_REG_INFO_STRUCT *) feature_para;
 
 	/*cam_pr_debug("feature_id = %d\n", feature_id);*/
 	switch (feature_id) {
@@ -4060,12 +4058,12 @@ static int feature_control(struct subdrv_ctx *ctx, MSDK_SENSOR_FEATURE_ENUM feat
 	case SENSOR_FEATURE_SET_ISP_MASTER_CLOCK_FREQ:
 		break;
 	case SENSOR_FEATURE_SET_REGISTER:
-//		write_cmos_sensor_8(sensor_reg_data->RegAddr,
-//				    sensor_reg_data->RegData);
+		write_cmos_sensor(ctx, sensor_reg_data->RegAddr,
+				    sensor_reg_data->RegData);
 		break;
 	case SENSOR_FEATURE_GET_REGISTER:
-//		sensor_reg_data->RegData =
-//			read_cmos_sensor_8(sensor_reg_data->RegAddr);
+		sensor_reg_data->RegData =
+			read_cmos_sensor(ctx, sensor_reg_data->RegAddr);
 		break;
 	case SENSOR_FEATURE_GET_LENS_DRIVER_ID:
 		/*get the lens driver ID from EEPROM
@@ -4348,8 +4346,8 @@ static struct mtk_mbus_frame_desc_entry frame_desc_prev[] = {
 		.bus.csi2 = {
 			.channel = 0,
 			.data_type = 0x2b,
-			.hsize = 0x0fa0,
-			.vsize = 0x0bb8,
+			.hsize = 4208,
+			.vsize = 3120,
 		},
 	},
 };
@@ -4359,8 +4357,8 @@ static struct mtk_mbus_frame_desc_entry frame_desc_cap[] = {
 		.bus.csi2 = {
 			.channel = 0,
 			.data_type = 0x2b,
-			.hsize = 0x0fa0,
-			.vsize = 0x0bb8,
+			.hsize = 4208,
+			.vsize = 3120,
 		},
 	},
 	{
@@ -4418,8 +4416,8 @@ static struct mtk_mbus_frame_desc_entry frame_desc_cus1[] = {
 		.bus.csi2 = {
 			.channel = 0,
 			.data_type = 0x2b,
-			.hsize = 0x0fa0,
-			.vsize = 0x08ca,
+			.hsize = 4208,//0x0fa0,
+			.vsize = 3120,//0x08ca,
 		},
 	},
 };

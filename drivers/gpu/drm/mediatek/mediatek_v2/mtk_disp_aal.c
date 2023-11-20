@@ -23,7 +23,7 @@
 #endif
 
 #ifdef CONFIG_LEDS_MTK_MODULE
-#define CONFIG_LEDS_BRIGHTNESS_CHANGED
+//#define CONFIG_LEDS_BRIGHTNESS_CHANGED
 #include <linux/leds-mtk.h>
 #else
 #define mtk_leds_brightness_set(x, y) do { } while (0)

@@ -344,12 +344,14 @@ static void venc_get_free_buffers(struct venc_inst *inst,
 	pResult->bs_va = (unsigned long)inst->ctx->bs_list[bs_index];
 	fb_index = list->venc_fb_va_list[list->read_idx];
 	pResult->frm_va = (unsigned long)inst->ctx->fb_list[fb_index];
+	pResult->flags = list->flags[list->read_idx];
 
-	mtk_vcodec_debug(inst, "bsva %lx %lld frva %lx %lld bssize %d iskey %d",
+	mtk_vcodec_debug(inst, "bsva %lx %lld frva %lx %lld bssize %d iskey %d flags 0x%x",
 		pResult->bs_va, bs_index,
 		pResult->frm_va, fb_index,
 		pResult->bs_size,
-		pResult->is_key_frm);
+		pResult->is_key_frm,
+		pResult->flags);
 
 	list->read_idx = (list->read_idx == VENC_MAX_FB_NUM - 1U) ?
 			 0U : list->read_idx + 1U;
@@ -383,7 +385,7 @@ static int venc_get_param(unsigned long handle,
 	int ret = 0;
 	struct venc_inst *inst = (struct venc_inst *)handle;
 
-	if (inst == NULL)
+	if (inst == NULL || inst->ctx == NULL)
 		return -EINVAL;
 
 	mtk_vcodec_debug(inst, "%s: %d", __func__, type);
@@ -431,7 +433,7 @@ static int venc_set_param(unsigned long handle,
 	struct venc_inst *inst = (struct venc_inst *)handle;
 	unsigned int fmt = 0;
 
-	if (inst == NULL)
+	if (inst == NULL || inst->ctx == NULL)
 		return -EINVAL;
 
 	mtk_vcodec_debug(inst, "->type=%d", type);

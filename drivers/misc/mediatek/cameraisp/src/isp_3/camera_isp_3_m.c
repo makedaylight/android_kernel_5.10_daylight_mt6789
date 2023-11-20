@@ -36,6 +36,7 @@
 #include "inc/cam_qos.h"
 
 #include "inc/camera_isp.h"
+#include <linux/suspend.h>
 
 struct ISP_PM_QOS_STRUCT G_PM_QOS[ISP_PASS1_PATH_TYPE_AMOUNT];
 
@@ -273,7 +274,10 @@ static unsigned int g_log_def_constraint;
 #endif
 
 #define ISP_REG_ADDR_EN1 (ISP_ADDR + 0x4)
+#define ISP_REG_ADDR_DMA_EN (ISP_ADDR + 0x8) //CAM_REG_CTL_EN_P1_DMA
+#define ISP_REG_ADDR_DMA_EN_D (ISP_ADDR + 0x14) //CAM_REG_CTL_EN_P1_DMA_D
 #define ISP_REG_CTL_SEL_GLOBAL (ISP_ADDR + 0x20)
+#define ISP_REG_ADDR_INT_P1_EN (ISP_ADDR + 0x48) //CAM_REG_CTL_INT_P1_EN
 #define ISP_REG_ADDR_INT_P1_ST (ISP_ADDR + 0x4C)
 #define ISP_REG_ADDR_INT_P1_ST2 (ISP_ADDR + 0x54)
 #define ISP_REG_ADDR_INT_P1_ST_D (ISP_ADDR + 0x5C)
@@ -299,8 +303,10 @@ static unsigned int g_log_def_constraint;
 #define ISP_REG_ADDR_RRZO_BASE_ADDR (ISP_ADDR + 0x3320)
 #define ISP_REG_ADDR_AFO_XSIZE (ISP_ADDR + 0x3488)
 #define ISP_REG_ADDR_AFO_YSIZE (ISP_ADDR + 0x348C)
+#define ISP_REG_ADDR_AAO_BASE_ADDR (ISP_ADDR + 0x3388)
+#define ISP_REG_ADDR_AAO_XSIZE (ISP_ADDR + 0x3390)
+#define ISP_REG_ADDR_AAO_YSIZE (ISP_ADDR + 0x3394)
 #define ISP_REG_ADDR_DMA_DCM_STATUS (ISP_ADDR + 0x1A8)
-
 #define ISP_REG_ADDR_DMA_REQ_STATUS (ISP_ADDR + 0x1C0)
 #define ISP_REG_ADDR_DMA_RDY_STATUS (ISP_ADDR + 0x1D4)
 #define ISP_REG_ADDR_DBG_SET (ISP_ADDR + 0x160)
@@ -2969,8 +2975,10 @@ static inline void Prepare_Enable_ccf_clock(void)
 	ret = pm_runtime_get_sync(cam_isp_devs->dev);
 	if (ret < 0)
 		log_err("cannot pm runtime get ISP_IMGSYS_CONFIG_IDX mtcmos\n");
-	else
-		log_inf("+ pm_runtime_get_sync\n");
+	else{
+		if (G_u4EnableClockCount == 1)
+			log_inf("+ pm_runtime_get_sync\n");
+	}
 
 	ret = clk_prepare_enable(isp_clk.CG_CAM_LARB2);
 	if (ret)
@@ -2999,6 +3007,9 @@ static inline void Prepare_Enable_ccf_clock(void)
 	ret = clk_prepare_enable(isp_clk.CG_CAMSV1);
 	if (ret)
 		log_err("cannot get CG_CAMSV1 clock\n");
+
+	if (G_u4EnableClockCount == 1)
+		log_inf("- pm_runtime_get_sync\n");
 }
 
 static inline void Disable_Unprepare_ccf_clock(void)
@@ -3007,6 +3018,8 @@ static inline void Disable_Unprepare_ccf_clock(void)
 	/* must keep this clk close order: CG_SCP_SYS_CAM ->
 	 * CG_SCP_SYS_DIS
 	 */
+	if (G_u4EnableClockCount == 0)
+		log_inf("+ pm_runtime_put_sync\n");
 
 	clk_disable_unprepare(isp_clk.CG_CAMSV1);
 	clk_disable_unprepare(isp_clk.CG_CAMSV0);
@@ -3018,8 +3031,10 @@ static inline void Disable_Unprepare_ccf_clock(void)
 	ret = pm_runtime_put_sync(cam_isp_devs->dev);
 	if (ret < 0)
 		log_err("cannot pm runtime put ISP_IMGSYS_CONFIG_IDX mtcmos\n");
-	else
-		log_inf("- pm_runtime_put_sync\n");
+	else{
+		if (G_u4EnableClockCount == 0)
+			log_inf("- pm_runtime_put_sync\n");
+}
 }
 
 /******************************************************************************
@@ -3036,12 +3051,12 @@ static void ISP_EnableClock(bool En)
 		spin_unlock(&(IspInfo.SpinLockClock));
 		Prepare_Enable_ccf_clock();
 		if (G_u4EnableClockCount == 1) {
+			log_inf("enable_irq\n");
 			for (module = ISP_CAM0_IRQ_IDX; module < ISP_CAM_IRQ_IDX_NUM; module++) {
 				if (module == ISP_CAM0_IRQ_IDX ||
 					module == ISP_CAMSV0_IRQ_IDX ||
 					module == ISP_CAMSV1_IRQ_IDX) {
 					enable_irq(cam_isp_devs->irq[module]);
-					log_inf("enable_irq cam %d\n", module);
 				}
 			}
 		}
@@ -3050,12 +3065,12 @@ static void ISP_EnableClock(bool En)
 		G_u4EnableClockCount--;
 		spin_unlock(&(IspInfo.SpinLockClock));
 		if (G_u4EnableClockCount == 0) {
+			log_inf("disable_irq\n");
 			for (module = ISP_CAM0_IRQ_IDX; module < ISP_CAM_IRQ_IDX_NUM; module++) {
 				if (module == ISP_CAM0_IRQ_IDX ||
 					module == ISP_CAMSV0_IRQ_IDX ||
 					module == ISP_CAMSV1_IRQ_IDX) {
 					disable_irq(cam_isp_devs->irq[module]);
-					log_inf("disable_irq cam %d\n", module);
 				}
 			}
 		}
@@ -3078,7 +3093,7 @@ static inline void ISP_Reset(signed int rst_path)
 	/*      */
 	log_dbg("- E.");
 
-	log_dbg("isp gate clk(0x%x),rst_path(%d)", ISP_RD32(ISP_ADDR_CAMINF),
+	log_inf("isp gate clk(0x%x),rst_path(%d)", ISP_RD32(ISP_ADDR_CAMINF),
 		rst_path);
 
 	if (rst_path == ISP_REG_SW_CTL_RST_CAM_P1) {
@@ -5096,6 +5111,9 @@ for (i = 0; i < ISP_RT_BUF_SIZE; i++) {
 			}
 }
 		if (i == ISP_RT_BUF_SIZE) {
+			spin_unlock_irqrestore(
+						&(IspInfo.SpinLockIrq
+							[irqT_Lock]),flags);
 			for (x = 0; x < ISP_RT_BUF_SIZE; x++)
 				log_dbg("[rtbc]dma(%d),idx(%d) PA(0x%x) VA(0x%llx)",
 					rt_dma,
@@ -7140,6 +7158,18 @@ static signed int ISP_DONE_Buf_Time(enum eISPIrq irqT, union CQ_RTBC_FBC *pFbc,
 	/* dynamic dma port     ctrl */
 	if (pstRTBuf->ring_buf[ch_imgo].active &&
 		pstRTBuf->ring_buf[ch_rrzo].active) {
+		#ifdef _imgo_fbc_wrkarnd_
+		// work around for imgo WCNT do not update
+		// take rrzo wcnt as ref instead
+		_dma_cur_fbc = rrzo_fbc;
+		_working_dma = ch_rrzo;
+		if (rrzo_fbc.Bits.WCNT != imgo_fbc.Bits.WCNT)
+			IRQ_LOG_KEEPER(
+				irqT, m_CurrentPPB, _LOG_INF,
+				"[rtbc_%d]:wcnt mismatch(%d,%d)!\n", irqT,
+				imgo_fbc.Bits.WCNT,
+				rrzo_fbc.Bits.WCNT);
+		#else
 		/* if P1_DON ISR is coming at */
 		/* output 2 imgo frames, */
 		/* but 1 rrzo frame */
@@ -7154,6 +7184,7 @@ static signed int ISP_DONE_Buf_Time(enum eISPIrq irqT, union CQ_RTBC_FBC *pFbc,
 			_dma_cur_fbc = imgo_fbc;
 			_working_dma = ch_imgo;
 		}
+		#endif
 	} else if (pstRTBuf->ring_buf[ch_imgo].active) {
 		_dma_cur_fbc = imgo_fbc;
 		_working_dma = ch_imgo;
@@ -9537,7 +9568,7 @@ static __tcmfunc irqreturn_t ISP_Irq_CAMSV2(signed int Irq, void *DeviceId)
 				IrqStatus_CAMSV2);
 
 	if (IspInfo.DebugMask & ISP_DBG_INT)
-		IRQ_LOG_KEEPER(_CAMSV_D_IRQ, m_CurrentPPB, _LOG_INF, CAMSV2_TAG
+		IRQ_LOG_KEEPER(_CAMSV_D_IRQ, m_CurrentPPB, _LOG_DBG, CAMSV2_TAG
 			       "Type(%d), IrqStatus(0x%x | 0x%08x)\n",
 			       ISP_IRQ_TYPE_INT_CAMSV2,
 			       IspInfo.IrqInfo.Status[ISP_IRQ_USER_ISPDRV]
@@ -9546,13 +9577,13 @@ static __tcmfunc irqreturn_t ISP_Irq_CAMSV2(signed int Irq, void *DeviceId)
 
 	if (IrqStatus_CAMSV2 & ISP_IRQ_CAMSV2_STATUS_PASS1_DON_ST) {
 		if (IspInfo.DebugMask & ISP_DBG_INT) {
-			IRQ_LOG_KEEPER(_CAMSV_D_IRQ, m_CurrentPPB, _LOG_INF,
+			IRQ_LOG_KEEPER(_CAMSV_D_IRQ, m_CurrentPPB, _LOG_DBG,
 				       CAMSV2_TAG "fbc(0x%x)",
 				       (unsigned int)(fbc.Reg_val));
 
 			IRQ_LOG_KEEPER(
 				_CAMSV_D_IRQ, m_CurrentPPB,
-				_LOG_INF, CAMSV2_TAG
+				_LOG_DBG, CAMSV2_TAG
 				"P1_DON_%d_%d(0x%x,0x%x,0x%x,0x%x,camsv support no	inner addr)\n",
 				(sof_count[_CAMSV_D])
 					? (sof_count[_CAMSV_D] - 1)
@@ -9575,7 +9606,7 @@ static __tcmfunc irqreturn_t ISP_Irq_CAMSV2(signed int Irq, void *DeviceId)
 		/* chk this     frame have EOF or not */
 		if (fbc.Bits.FB_NUM == fbc.Bits.FBC_CNT) {
 			gSof_camsvdone[1] = 1;
-			IRQ_LOG_KEEPER(_CAMSV_D_IRQ, m_CurrentPPB, _LOG_INF,
+			IRQ_LOG_KEEPER(_CAMSV_D_IRQ, m_CurrentPPB, _LOG_DBG,
 				       CAMSV2_TAG "Lost done %d",
 				       sof_count[_CAMSV_D]);
 
@@ -9610,7 +9641,7 @@ static __tcmfunc irqreturn_t ISP_Irq_CAMSV2(signed int Irq, void *DeviceId)
 				ISP_WR32(ISP_REG_ADDR_CAMSV2_IMGO_FBC,
 					 fbc.Reg_val);
 				IRQ_LOG_KEEPER(_CAMSV_D_IRQ, m_CurrentPPB,
-					       _LOG_INF,
+					       _LOG_DBG,
 					       CAMSV2_TAG "RCNT_INC\n");
 			} else {
 				mFwRcnt.curIdx[_CAMSV_D_IRQ] = 0;
@@ -9628,7 +9659,7 @@ static __tcmfunc irqreturn_t ISP_Irq_CAMSV2(signed int Irq, void *DeviceId)
 
 			IRQ_LOG_KEEPER(
 				_CAMSV_D_IRQ, m_CurrentPPB,
-				_LOG_INF, CAMSV2_TAG
+				_LOG_DBG, CAMSV2_TAG
 				"P1_SOF_%d_%d(0x%x,0x%x,0x%x,0x%x,camsv	support	no inner addr)\n",
 				sof_count[_CAMSV_D],
 				((ISP_RD32(ISP_REG_ADDR_CAMSV_TG2_INTER_ST) &
@@ -10057,6 +10088,19 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(signed int Irq, void *DeviceId)
 
 		G_PM_QOS[ISP_PASS1_PATH_TYPE_RAW].sof_flag = MTRUE;
 
+		#ifdef _imgo_fbc_wrkarnd_
+		// work around for imgo WCNT do not update
+		// take rrzo wcnt as ref first
+		if (pstRTBuf->ring_buf[_rrzo_].active) {
+			_dmaport = 1;
+			rt_dma = _rrzo_;
+		} else if (pstRTBuf->ring_buf[_imgo_].active) {
+			_dmaport = 0;
+			rt_dma = _imgo_;
+		} else {
+			log_err("no main dma port opened at	SOF\n");
+		}
+		#else
 		if (pstRTBuf->ring_buf[_imgo_].active) {
 			_dmaport = 0;
 			rt_dma = _imgo_;
@@ -10066,6 +10110,7 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(signed int Irq, void *DeviceId)
 		} else {
 			log_err("no main dma port opened at	SOF\n");
 		}
+		#endif
 		/* chk this     frame have EOF or not, dynimic dma port chk */
 		if (p1_fbc[_dmaport].Bits.FB_NUM ==
 		    p1_fbc[_dmaport].Bits.FBC_CNT) {
@@ -10160,7 +10205,7 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(signed int Irq, void *DeviceId)
 					 p1_fbc[1].Reg_val);
 				if (IspInfo.DebugMask & ISP_DBG_INT)
 					IRQ_LOG_KEEPER(_IRQ, m_CurrentPPB,
-						       _LOG_INF,
+						       _LOG_DBG,
 						       " p1:RCNT_INC:	");
 			} else {
 				mFwRcnt.curIdx[_IRQ] = 0;
@@ -10180,20 +10225,22 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(signed int Irq, void *DeviceId)
 			_fbc_chk[1].Reg_val = ISP_RD32(ISP_REG_ADDR_RRZO_FBC);
 			IRQ_LOG_KEEPER(
 				_IRQ, m_CurrentPPB, _LOG_INF,
-				"P1_SOF_%d_%d(0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x, D_%d(%d/%d)_Filled(%d_%d_%d),D_%d(%d/%d)_Filled(%d_%d_%d) )\n",
+				"P1_SOF_%d_%d(0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,AAO(0x%x,0x%x,0x%x),D_%d(%d/%d)_Filled(%d_%d_%d),D_%d(%d/%d)_Filled(%d_%d_%d) )\n",
 				sof_count[_PASS1], cur_v_cnt,
 				(unsigned int)(_fbc_chk[0].Reg_val),
 				(unsigned int)(_fbc_chk[1].Reg_val),
+				ISP_RD32(ISP_REG_ADDR_DMA_EN),
+				ISP_RD32(ISP_REG_ADDR_DMA_EN_D),
+				ISP_RD32(ISP_REG_ADDR_INT_P1_EN),
 				ISP_RD32(ISP_REG_ADDR_IMGO_BASE_ADDR),
 				ISP_RD32(ISP_REG_ADDR_RRZO_BASE_ADDR),
 				ISP_RD32(ISP_INNER_REG_ADDR_IMGO_YSIZE),
 				ISP_RD32(ISP_INNER_REG_ADDR_RRZO_YSIZE),
-				ISP_RD32(ISP_REG_ADDR_AFO_XSIZE),
-				ISP_RD32(ISP_REG_ADDR_AFO_YSIZE),
-				ISP_RD32(ISP_INNER_REG_ADDR_AFO_XSIZE),
-				ISP_RD32(ISP_INNER_REG_ADDR_AFO_YSIZE),
 				ISP_RD32(ISP_REG_ADDR_TG_MAGIC_0),
 				ISP_RD32(ISP_REG_ADDR_DMA_DCM_STATUS),
+				ISP_RD32(ISP_REG_ADDR_AAO_BASE_ADDR),
+				ISP_RD32(ISP_REG_ADDR_AAO_XSIZE),
+				ISP_RD32(ISP_REG_ADDR_AAO_YSIZE),
 				_imgo_,
 				pstRTBuf->ring_buf[_imgo_].start,
 				pstRTBuf->ring_buf[_imgo_].read_idx,
@@ -10742,7 +10789,6 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	struct ISP_ED_BUFQUE_STRUCT edQueBuf;
 	unsigned int regScenInfo_value = 0xa5a5a5a5;
 	signed int burstQNum;
-	unsigned int wakelock_ctrl;
 	unsigned long flags;
 	/* old: unsigned int flags;*/ /* FIX to avoid build warning */
 	int userKey = -1;
@@ -10758,30 +10804,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	/*      */
 	switch (Cmd) {
 	case ISP_WAKELOCK_CTRL: {
-		if (copy_from_user(&wakelock_ctrl, (void *)Param,
-				   sizeof(unsigned int)) != 0) {
-			log_err("get ISP_WAKELOCK_CTRL from	user fail");
-			Ret = -EFAULT;
-		} else {
-			if (wakelock_ctrl == 1) { /* Enable     wakelock */
-				if (g_bWaitLock == 0) {
-#if IS_ENABLED(CONFIG_PM_SLEEP)
-					__pm_stay_awake(isp_wake_lock);
-#endif
-					g_bWaitLock = 1;
-					log_dbg("wakelock enable!!\n");
-				}
-			} else { /* Disable wakelock */
-				if (g_bWaitLock == 1) {
-#if IS_ENABLED(CONFIG_PM_SLEEP)
-					__pm_relax(isp_wake_lock);
-#endif
-					g_bWaitLock = 0;
-					log_dbg("wakelock disable!!\n");
-				}
-			}
-		}
-
+		log_wrn("K510 control wake lock by kernel!\n");
 	} break;
 	case ISP_GET_DROP_FRAME:
 		if (copy_from_user(&DebugFlag[0], (void *)Param,
@@ -12379,6 +12402,15 @@ EXIT:
 			G_u4EnableClockCount);
 	}
 
+	/* The driver need to hold wakelock, when camera is open */
+	if (IspInfo.UserCount == 1) {
+	#if IS_ENABLED(CONFIG_PM_SLEEP)
+		__pm_stay_awake(isp_wake_lock);
+	#endif
+		g_bWaitLock = 1;
+		log_inf("- get wake_lock: %d.", g_bWaitLock);
+	}
+
 	log_inf("- X. Ret: %d. UserCount: %d.", Ret, IspInfo.UserCount);
 	mutex_unlock(&open_isp_mutex);
 	return Ret;
@@ -12432,18 +12464,8 @@ static signed int ISP_release(struct inode *pInode, struct file *pFile)
 	Reg &= 0xfffffffE; /* close Vfinder */
 	ISP_WR32(ISP_REG_ADDR_TG2_VF_CON, Reg);
 
-	/* why i add this wake_unlock here, because     the     Ap is not
-	 * expected to be dead.
-	 * The driver must releae the wakelock, otherwise the system will not
-	 * enter
-	 * the power-saving mode
-	 */
-	if (g_bWaitLock == 1) {
-#if IS_ENABLED(CONFIG_PM_SLEEP)
-		__pm_relax(isp_wake_lock);
-#endif
-		g_bWaitLock = 0;
-	}
+	for ( i = 0; i < ISP_REG_SW_CTL_RST_CAMSV2; i++)
+		ISP_Reset(i + 1);
 	/* reset */
 	/*      */
 	for (i = 0; i < IRQ_USER_NUM_MAX; i++) {
@@ -12480,13 +12502,27 @@ EXIT:
 /* log_dbg("Before spm_enable_sodi()."); */
 /* Enable sodi (Multi-Core Deep Idle). */
 
+	/*disable CMOS */
+	ISP_WR32(ISP_REG_ADDR_TG_SEN_MODE,
+		ISP_RD32(ISP_REG_ADDR_TG_SEN_MODE)&0xFFFFFFFE);
 	/* Disable clock.
 	 *  1. clkmgr: G_u4EnableClockCount=0, call clk_enable/disable
 	 *  2. CCF: call clk_enable/disable every time
 	 */
 	ISP_EnableClock(MFALSE);
 	log_inf("isp release G_u4EnableClockCount: %d\n", G_u4EnableClockCount);
-	/*  */
+
+	/* The driver must releae the wakelock, otherwise the system will not
+	 * enter the power-saving mode
+	 */
+	if (IspInfo.UserCount == 0 && g_bWaitLock == 1) {
+	#if IS_ENABLED(CONFIG_PM_SLEEP)
+		__pm_relax(isp_wake_lock);
+	#endif
+		g_bWaitLock = 0;
+		log_inf("- pm_relax wake_lock: %d.", g_bWaitLock);
+	}
+
 	log_inf("- X. UserCount: %d.", IspInfo.UserCount);
 	mutex_unlock(&open_isp_mutex);
 	return 0;
@@ -13088,46 +13124,6 @@ static signed int bPass1_On_In_Resume_TG1;
 static signed int bPass1_On_In_Resume_TG2;
 static signed int ISP_suspend(struct platform_device *pDev, pm_message_t Mesg)
 {
-	unsigned int regTG1Val, regTG2Val;
-	unsigned int loopcnt = 0;
-
-	if (IspInfo.UserCount == 0) {
-		log_dbg("ISP UserCount=0");
-		return 0;
-	}
-
-	/* TG_VF_CON[0] (0x15004414[0]): VFDATA_EN.     TG1     Take Picture
-	 * Request.
-	 */
-	regTG1Val = ISP_RD32(ISP_ADDR + 0x414);
-	/* TG2_VF_CON[0] (0x150044B4[0]): VFDATA_EN. TG2 Take Picture Request.
-	 */
-	regTG2Val = ISP_RD32(ISP_ADDR + 0x4B4);
-
-	log_dbg("bPass1_On_In_Resume_TG1(%d). bPass1_On_In_Resume_TG2(%d). regTG1Val(0x%08x). regTG2Val(0x%08x)\n",
-		bPass1_On_In_Resume_TG1, bPass1_On_In_Resume_TG2,
-		regTG1Val, regTG2Val);
-
-	bPass1_On_In_Resume_TG1 = 0;
-	if (regTG1Val & 0x01) { /* For TG1 Main sensor. */
-		bPass1_On_In_Resume_TG1 = 1;
-		ISP_WR32(ISP_ADDR + 0x414, (regTG1Val & (~0x01)));
-	}
-
-	bPass1_On_In_Resume_TG2 = 0;
-	if (regTG2Val & 0x01) { /* For TG2 Sub sensor. */
-		bPass1_On_In_Resume_TG2 = 1;
-		ISP_WR32(ISP_ADDR + 0x4B4, (regTG2Val & (~0x01)));
-	}
-	spin_lock(&(IspInfo.SpinLockClock));
-	loopcnt = G_u4EnableClockCount; //"G_u4EnableClockCount" times
-	spin_unlock(&(IspInfo.SpinLockClock));
-	while (loopcnt) {//make sure G_u4EnableClockCount dec to 0
-		ISP_EnableClock(MFALSE);
-		log_inf("isp suspend G_u4EnableClockCount: %d", G_u4EnableClockCount);
-		loopcnt--;
-	}
-
 	return 0;
 }
 
@@ -13136,40 +13132,6 @@ static signed int ISP_suspend(struct platform_device *pDev, pm_message_t Mesg)
  ******************************************************************************/
 static signed int ISP_resume(struct platform_device *pDev)
 {
-	unsigned int regTG1Val, regTG2Val;
-
-	if (IspInfo.UserCount == 0) {
-		log_dbg("ISP UserCount=0");
-		return 0;
-	}
-	//enable clock
-	ISP_EnableClock(MTRUE);
-	log_inf("isp resume G_u4EnableClockCount: %d\n", G_u4EnableClockCount);
-
-	/* TG_VF_CON[0] (0x15004414[0]): VFDATA_EN.     TG1     Take Picture
-	 * Request.
-	 */
-	regTG1Val = ISP_RD32(ISP_ADDR + 0x414);
-	/* TG2_VF_CON[0] (0x150044B4[0]): VFDATA_EN. TG2 Take Picture Request.
-	 */
-	regTG2Val = ISP_RD32(ISP_ADDR + 0x4B4);
-
-	log_dbg("bPass1_On_In_Resume_TG1(%d). bPass1_On_In_Resume_TG2(%d). regTG1Val(0x%x) regTG2Val(0x%x)\n",
-		bPass1_On_In_Resume_TG1, bPass1_On_In_Resume_TG2,
-		regTG1Val, regTG2Val);
-
-	if (bPass1_On_In_Resume_TG1) {
-		bPass1_On_In_Resume_TG1 = 0;
-		ISP_WR32(ISP_ADDR + 0x414,
-			 (regTG1Val | 0x01)); /* For TG1 Main sensor. */
-	}
-
-	if (bPass1_On_In_Resume_TG2) {
-		bPass1_On_In_Resume_TG2 = 0;
-		ISP_WR32(ISP_ADDR + 0x4B4,
-			 (regTG2Val | 0x01)); /* For TG2 Sub sensor. */
-	}
-
 	return 0;
 }
 
@@ -13218,6 +13180,90 @@ int ISP_pm_restore_noirq(struct device *device)
 /*---------------------------------------------------------------------------*/
 #endif /*CONFIG_PM */
 /*---------------------------------------------------------------------------*/
+#if IS_ENABLED(CONFIG_PM)
+/*******************************************************************************
+ *
+ ******************************************************************************/
+static int ISP_pm_event_suspend(void)
+{
+	unsigned int regTG1Val, regTG2Val;
+	unsigned int loopcnt = 0;
+
+	if (IspInfo.UserCount == 0) {
+		log_dbg("ISP UserCount=0");
+		return 0;
+	}
+
+	/* TG_VF_CON[0] (0x15004414[0]): VFDATA_EN.     TG1     Take Picture
+	 * Request.
+	 */
+	regTG1Val = ISP_RD32(ISP_ADDR + 0x414);
+	/* TG2_VF_CON[0] (0x150044B4[0]): VFDATA_EN. TG2 Take Picture Request.
+	 */
+	regTG2Val = ISP_RD32(ISP_ADDR + 0x4B4);
+
+	log_dbg("bPass1_On_In_Resume_TG1(%d). bPass1_On_In_Resume_TG2(%d). regTG1Val(0x%08x). regTG2Val(0x%08x)\n",
+		bPass1_On_In_Resume_TG1, bPass1_On_In_Resume_TG2,
+		regTG1Val, regTG2Val);
+
+	bPass1_On_In_Resume_TG1 = 0;
+	if (regTG1Val & 0x01) { /* For TG1 Main sensor. */
+		bPass1_On_In_Resume_TG1 = 1;
+		ISP_WR32(ISP_ADDR + 0x414, (regTG1Val & (~0x01)));
+	}
+
+	bPass1_On_In_Resume_TG2 = 0;
+	if (regTG2Val & 0x01) { /* For TG2 Sub sensor. */
+		bPass1_On_In_Resume_TG2 = 1;
+		ISP_WR32(ISP_ADDR + 0x4B4, (regTG2Val & (~0x01)));
+	}
+	spin_lock(&(IspInfo.SpinLockClock));
+	loopcnt = G_u4EnableClockCount; //"G_u4EnableClockCount" times
+	spin_unlock(&(IspInfo.SpinLockClock));
+	while (loopcnt) {//make sure G_u4EnableClockCount dec to 0
+		ISP_EnableClock(MFALSE);
+		log_inf("isp suspend G_u4EnableClockCount: %d", G_u4EnableClockCount);
+		loopcnt--;
+	}
+
+	return 0;
+}
+
+/*******************************************************************************
+ *
+ ******************************************************************************/
+static void ISP_pm_event_resume(void)
+{
+}
+
+/*******************************************************************************
+ *
+ ******************************************************************************/
+static int ISP_suspend_pm_event(struct notifier_block *notifier,
+			unsigned long pm_event, void *unused)
+{
+	switch (pm_event) {
+	case PM_HIBERNATION_PREPARE:
+		return NOTIFY_DONE;
+	case PM_RESTORE_PREPARE:
+		return NOTIFY_DONE;
+	case PM_POST_HIBERNATION:
+		return NOTIFY_DONE;
+	case PM_SUSPEND_PREPARE: /* before enter suspend */
+		ISP_pm_event_suspend();
+		return NOTIFY_DONE;
+	case PM_POST_SUSPEND: /* after resume */
+		ISP_pm_event_resume();
+		return NOTIFY_DONE;
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block ISP_suspend_pm_notifier_func = {
+	.notifier_call = ISP_suspend_pm_event,
+	.priority = 0,
+};
+#endif
 
 #if IS_ENABLED(CONFIG_OF)
 static const struct of_device_id isp_of_ids[] = {
@@ -13539,6 +13585,13 @@ static signed int __init ISP_Init(void)
 	for (i = 0; i < _rt_dma_max_; i++)
 		m_LastMNum[i] = 0;
 
+#endif
+#if IS_ENABLED(CONFIG_PM)
+	Ret = register_pm_notifier(&ISP_suspend_pm_notifier_func);
+	if (Ret) {
+		log_err ("Failed to register PM notifier.\n");
+		return Ret;
+	}
 #endif
 
 	log_inf("- Ret: %d.", Ret);

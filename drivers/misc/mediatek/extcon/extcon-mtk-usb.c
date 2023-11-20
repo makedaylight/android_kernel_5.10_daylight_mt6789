@@ -40,6 +40,9 @@ static const char * const usb_mode_roles[] = {
 	[USB_ROLE_DEVICE]	= "device",
 };
 
+static struct class *pogo_class;
+static struct device *pogo_device;
+
 static void mtk_usb_extcon_update_role(struct work_struct *work)
 {
 	struct usb_role_info *role = container_of(to_delayed_work(work),
@@ -314,6 +317,10 @@ static int mtk_extcon_tcpc_notifier(struct notifier_block *nb,
 			container_of(nb, struct mtk_extcon_info, tcpc_nb);
 	struct device *dev = extcon->dev;
 	bool vbus_on;
+	char *tcpc_notifier_srcplug[2]    = { "TCPC_NOTIFIER=SRC_PLUG", NULL };
+	char *tcpc_notifier_sinkplug[2]    = { "TCPC_NOTIFIER=SINK_PLUG", NULL };
+	char *tcpc_notifier_out[2]    = { "TCPC_NOTIFIER=OUT", NULL };
+	char *tcpc_notifier_unknow[2]    = { "TCPC_NOTIFIER=UNKKNOW", NULL };
 
 	switch (event) {
 	case TCP_NOTIFY_SOURCE_VBUS:
@@ -334,6 +341,7 @@ static int mtk_extcon_tcpc_notifier(struct notifier_block *nb,
 				mtk_usb_extcon_set_role(extcon, USB_ROLE_HOST);
 			}
 			extcon->usb_role = USB_ROLE_HOST;
+			kobject_uevent_env(&pogo_device->kobj, KOBJ_CHANGE, tcpc_notifier_srcplug);
 		} else if (!(extcon->bypss_typec_sink) &&
 			noti->typec_state.old_state == TYPEC_UNATTACHED &&
 			(noti->typec_state.new_state == TYPEC_ATTACHED_SNK ||
@@ -345,6 +353,7 @@ static int mtk_extcon_tcpc_notifier(struct notifier_block *nb,
 				mtk_usb_extcon_set_role(extcon, USB_ROLE_DEVICE);
 			}
 			extcon->usb_role = USB_ROLE_DEVICE;
+			kobject_uevent_env(&pogo_device->kobj, KOBJ_CHANGE, tcpc_notifier_sinkplug);
 		} else if ((noti->typec_state.old_state == TYPEC_ATTACHED_SRC ||
 			noti->typec_state.old_state == TYPEC_ATTACHED_SNK ||
 			noti->typec_state.old_state == TYPEC_ATTACHED_NORP_SRC ||
@@ -356,6 +365,9 @@ static int mtk_extcon_tcpc_notifier(struct notifier_block *nb,
 				mtk_usb_extcon_set_role(extcon, USB_ROLE_NONE);
 			}
 			extcon->usb_role = USB_ROLE_NONE;
+			kobject_uevent_env(&pogo_device->kobj, KOBJ_CHANGE, tcpc_notifier_out);
+		} else {
+			kobject_uevent_env(&pogo_device->kobj, KOBJ_CHANGE, tcpc_notifier_unknow);
 		}
 		break;
 	case TCP_NOTIFY_DR_SWAP:
@@ -461,16 +473,31 @@ unsigned int check_typec_mode(struct mtk_extcon_info *extcon)
 	if ((cc1 == TYPEC_CC_VOLT_OPEN && cc2 == TYPEC_CC_VOLT_RD) || 
 		(cc2 == TYPEC_CC_VOLT_OPEN && cc1 == TYPEC_CC_VOLT_RD)) {
 		return USB_ROLE_HOST;
-	}
-	else if ((cc1 == TYPEC_CC_VOLT_SNK_DFT && (cc2 == TYPEC_CC_VOLT_SNK_DFT || cc2 == TYPEC_CC_VOLT_OPEN)) ||
+	} else if ((cc1 == TYPEC_CC_VOLT_SNK_DFT && (cc2 == TYPEC_CC_VOLT_SNK_DFT || cc2 == TYPEC_CC_VOLT_OPEN)) ||
 			 (cc2 == TYPEC_CC_VOLT_SNK_DFT && (cc1 == TYPEC_CC_VOLT_SNK_DFT || cc1 == TYPEC_CC_VOLT_OPEN))) {
 		return USB_ROLE_DEVICE;
+	} else if (((cc1 == TYPEC_CC_VOLT_SNK_DFT || cc1 == TYPEC_CC_VOLT_SNK_1_5 || cc1 == TYPEC_CC_VOLT_SNK_3_0) && cc2 == TYPEC_CC_VOLT_OPEN) ||
+				((cc2 == TYPEC_CC_VOLT_SNK_DFT || cc2 == TYPEC_CC_VOLT_SNK_1_5 || cc2 == TYPEC_CC_VOLT_SNK_3_0) && cc1 == TYPEC_CC_VOLT_OPEN)) {
+		return USB_ROLE_DEVICE;
 	}
-	//else if (usb_is_online(extcon)) {
+	//else if (cc1 == TYPEC_CC_DRP_TOGGLING && cc2 == TYPEC_CC_DRP_TOGGLING && usb_is_online(extcon)) {
 	//	return USB_ROLE_DEVICE;
 	//}
 
 	return USB_ROLE_NONE;
+}
+
+static void set_usb_sel_gpiod(struct mtk_extcon_info *extcon, int value)
+{
+	char *usb_sel_hign[2]    = { "USB_SEL=HIGH", NULL };
+	char *usb_sel_low[2]    = { "USB_SEL=LOW", NULL };
+
+	gpiod_set_value_cansleep(extcon->usb_sel_gpiod, value);
+	if (value) {
+		kobject_uevent_env(&pogo_device->kobj, KOBJ_CHANGE, usb_sel_hign);
+	} else {
+		kobject_uevent_env(&pogo_device->kobj, KOBJ_CHANGE, usb_sel_low);
+	}
 }
 
 static void mtk_usb_extcon_detect_pogo_id(struct work_struct *work)
@@ -478,13 +505,15 @@ static void mtk_usb_extcon_detect_pogo_id(struct work_struct *work)
 	struct mtk_extcon_info *extcon = container_of(to_delayed_work(work),
 		struct mtk_extcon_info, wq_detpogoid);
 	int pogoid;
+	char *pogo_id_high[2]    = { "POGO_ID=HIGH", NULL };
+	char *pogo_id_low[2]    = { "POGO_ID=LOW", NULL };
 
 	/* check ID and update cable state */
 	pogoid = extcon->pogo_id_gpiod ?
 		gpiod_get_value_cansleep(extcon->pogo_id_gpiod) : 1;
 	
-	dev_info(extcon->dev, "mtk_usb_extcon_detect_pogo_id   [%d]\n", extcon->pogo_id_gpiod);
-	
+	dev_info(extcon->dev, "mtk_usb_extcon_detect_pogo_id  change\n");
+
 	/* at first we clean states which are no longer active */
 	if (pogoid) {
 		if (extcon->pogo_usb_on) {
@@ -499,13 +528,15 @@ static void mtk_usb_extcon_detect_pogo_id(struct work_struct *work)
 			}
 			mtk_usb_extcon_set_role(extcon, typec_mode);
 
-			gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 0);
+			//gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 0);
+			set_usb_sel_gpiod(extcon, 0);
 			extcon->pogo_usb_on = false;
 		}
 	} else {
 #if irq_pogo
 		if (!extcon->pogo_usb_on) {
-			gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 1);
+			//gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 1);
+			set_usb_sel_gpiod(extcon, 1);
 			extcon->pogo_usb_on = true;
 			regulator_enable(extcon->pogovbus);
 			mtk_usb_extcon_set_role(extcon, USB_ROLE_HOST);
@@ -513,6 +544,12 @@ static void mtk_usb_extcon_detect_pogo_id(struct work_struct *work)
 #endif
 	}
 	extcon->pogoid_on = pogoid;
+
+	if (pogoid) {
+		kobject_uevent_env(&pogo_device->kobj, KOBJ_CHANGE, pogo_id_high);
+	} else {
+		kobject_uevent_env(&pogo_device->kobj, KOBJ_CHANGE, pogo_id_low);
+	}
 }
 
 static irqreturn_t mtk_usb_pogoidpin_handle(int irq, void *dev_id)
@@ -589,7 +626,8 @@ static int mtk_usb_extcon_pogo_id_pin_init(struct mtk_extcon_info *extcon)
 
 #if irq_pogo
 	if (!extcon->pogoid_on) {
-		gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 1);
+		//gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 1);
+		set_usb_sel_gpiod(extcon, 1);
 		extcon->pogo_usb_on = true;
 		regulator_enable(extcon->pogovbus);
 		mtk_usb_extcon_set_role(extcon, USB_ROLE_HOST);
@@ -757,13 +795,15 @@ static ssize_t usb_sel_procfs_write(struct file *file,
 			regulator_disable(extcon->pogovbus);
 
 			mtk_usb_extcon_set_role(extcon, extcon->usb_role);
-			gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 0);
+			//gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 0);
+			set_usb_sel_gpiod(extcon, 0);
 			extcon->pogo_usb_on = false;
 		}
 	} else if (cmd == 1) {
 		if (!extcon->pogo_usb_on) {
 			pr_info("usb_role[%d]\n", extcon->usb_role);
-			gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 1);
+			//gpiod_set_value_cansleep(extcon->usb_sel_gpiod, 1);
+			set_usb_sel_gpiod(extcon, 1);
 			extcon->pogo_usb_on = true;
 			//gpiod_set_value_cansleep(extcon->pogo_vbus_gpiod, 1);
 			regulator_enable(extcon->pogovbus);
@@ -1118,6 +1158,8 @@ static struct platform_driver mtk_usb_extcon_driver = {
 
 static int __init mtk_usb_extcon_init(void)
 {
+	pogo_class = class_create(THIS_MODULE, "pogoc");
+	pogo_device = device_create(pogo_class, NULL, MKDEV(0, 0), NULL, "pogod");
 	return platform_driver_register(&mtk_usb_extcon_driver);
 }
 late_initcall(mtk_usb_extcon_init);
