@@ -7,6 +7,12 @@ config DRM_MEDIATEK_V2
 	  This driver provides kernel mode setting and
 	  buffer management to userspace.
 
+config DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+	bool "Enable the Display Low-Power Idle mode"
+	default n
+	help
+	  Select to enable the Display Low-Power Idle mode
+
 config DRM_MTK_ICOM_DSI_POWER_SEQUENCE
 	bool "Use InnoComm power-on/off sequence for MTK DRMv2 DSI driver"
 	default n

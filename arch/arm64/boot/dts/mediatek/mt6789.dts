@@ -2091,6 +2091,7 @@
 		soc_limit = <15>;
 		soc_limit_ext = <20>;
 		soc_limit_ext_release = <25>;
+		gauge = <&mtk_gauge>;
 	};
 
 	soc: soc {

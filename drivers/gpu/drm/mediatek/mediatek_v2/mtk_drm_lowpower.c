@@ -233,13 +233,19 @@ static void mtk_drm_vdo_mode_enter_idle(struct drm_crtc *crtc)
 
 	comp = mtk_ddp_comp_request_output(mtk_crtc);
 	if (comp) {
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+		mtk_ddp_comp_io_cmd(comp, handle, DSI_VFP_IDLE_MODE, NULL);
+#else
 		int en = 0;
 		mtk_ddp_comp_io_cmd(comp, handle, DSI_VFP_IDLE_MODE, NULL);
 		mtk_ddp_comp_io_cmd(comp, handle, DSI_LFR_SET, &en);
+#endif
 	}
 	cmdq_pkt_flush(handle);
 	cmdq_pkt_destroy(handle);
+#ifndef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
 	drm_crtc_vblank_off(crtc);
+#endif
 }
 
 static void mtk_drm_cmd_mode_enter_idle(struct drm_crtc *crtc)
@@ -268,14 +274,20 @@ static void mtk_drm_vdo_mode_leave_idle(struct drm_crtc *crtc)
 
 	comp = mtk_ddp_comp_request_output(mtk_crtc);
 	if (comp) {
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+		mtk_ddp_comp_io_cmd(comp, handle, DSI_VFP_DEFAULT_MODE, NULL);
+#else
 		int en = 1;
 		mtk_ddp_comp_io_cmd(comp, handle, DSI_VFP_DEFAULT_MODE, NULL);
 		mtk_ddp_comp_io_cmd(comp, handle, DSI_LFR_SET, &en);
+#endif
 	}
 
 	cmdq_pkt_flush(handle);
 	cmdq_pkt_destroy(handle);
+#ifndef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
 	drm_crtc_vblank_on(crtc);
+#endif
 }
 
 static void mtk_drm_cmd_mode_leave_idle(struct drm_crtc *crtc)

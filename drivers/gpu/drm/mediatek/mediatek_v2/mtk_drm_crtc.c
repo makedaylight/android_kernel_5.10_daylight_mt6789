@@ -3349,7 +3349,15 @@ __get_golden_setting_context(struct mtk_drm_crtc *mtk_crtc)
 
 unsigned int mtk_crtc_get_idle_interval(struct drm_crtc *crtc, unsigned int fps)
 {
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+	/*calculate the timeout to enter idle in ms*/
+	unsigned int idle_interval = (3 * 1000) / fps + 1;
 
+	DDPINFO("[fps]:%s,[fps->idle interval][%d fps->%d ms]\n",
+		__func__, fps, idle_interval);
+
+	return idle_interval;
+#else
 	unsigned int idle_interval = mtk_drm_get_idle_check_interval(crtc);
 	/*calculate the timeout to enter idle in ms*/
 	if (idle_interval > 50)
@@ -3360,6 +3368,7 @@ unsigned int mtk_crtc_get_idle_interval(struct drm_crtc *crtc, unsigned int fps)
 		__func__, fps, idle_interval);
 
 	return idle_interval;
+#endif
 }
 
 void mtk_drm_crtc_mode_check(struct drm_crtc *crtc,

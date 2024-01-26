@@ -472,8 +472,8 @@ int __mtk_pdc_setup(struct chg_alg_device *alg, int idx)
 			&pd->pd_boost_idx, &pd->pd_buck_idx);
 	}
 
-	pd_err("[%s]idx:%d:%d:%d:%d vbus:%d cur:%d ret:%d\n", __func__,
-		pd->pd_idx, idx, pd->pd_boost_idx, pd->pd_buck_idx,
+	pd_err("[%s]idx:%d:%d:%d:%d force_update:%d vbus:%d cur:%d ret:%d\n", __func__,
+		pd->pd_idx, idx, pd->pd_boost_idx, pd->pd_buck_idx, force_update,
 		pd->cap.max_mv[idx], pd->cap.ma[idx], ret);
 
 	pd->pd_idx = idx;
@@ -497,18 +497,70 @@ void mtk_pdc_reset(struct chg_alg_device *alg)
 int mtk_pd_input_current_protection(struct chg_alg_device *alg, int vbus)
 {
 	struct mtk_pd *pd = dev_get_drvdata(&alg->dev);
+	bool chg2_chg_en = false, chg2_enabled = false;
+	const int base_input_current_5v = 3000000; //5V,3A (15W)
+	const int base_input_current_9v = 1675000; //9V,1.675A (15W)
+	const int max_input_current_9v = 3000000; //9V,3A (limit to 27W if ichg2=3.15A(max) => imid~=1.475A+1.675A)
+	const int base_input_current_12v = 1250000; //12V,1.25A (15W)
+	const int max_input_current_12v = 2250000; //12V,2.25A (limit to 27W if ichg2=3.15A(max) => imid~=1.125A+1.25A)
+	// Input current protection for USB PD PPS is not supported!
 
-	switch (vbus) {
-	case 5000:
-		pd->input_current_limit1 = 3000000;
-		break;
-	case 9000:
-		pd->input_current_limit1 = 1500000;
-		break;
+	if (alg->config == DUAL_CHARGERS_IN_SERIES) {
+		chg2_enabled = pd_hal_is_chip_enable(alg, CHG2);
+		pd_hal_is_charger_enable(alg, CHG2, &chg2_chg_en);
 	}
+
+	pd_dbg("%s: chg2_enabled=%d, chg2_chg_en=%d; vbus=%d; input_current_limit1=%d\n",
+			__func__, chg2_enabled, chg2_chg_en, vbus, pd->input_current_limit1);
+
+	if (chg2_enabled && chg2_chg_en) {
+		//For slave charger (chg2) in series thru Vmid. Imid should be excluded for inductor protection. 
+		int ichg2 = 0, imid = 0;
+		unsigned long tmp = 0;
+
+		pd_hal_get_charging_current(alg, CHG2, &ichg2); //use chg2's charge current for estimation
+		tmp = (4200 * (ichg2 / 1000)) / vbus; //Vbat=3.4V-4.4V => 4.2V;
+		imid = roundup((int) tmp, 25); //mA, 25mA steps for input current
+		imid *= 1000; //uA
+
+		pd_dbg("%s: tmp=%lu, ichg2=%d, imid=%d\n", __func__, tmp, ichg2, imid);
+
+		switch (vbus) {
+		case 5000:
+			pd->input_current_limit1 = base_input_current_5v;
+			break;
+		case 9000:
+			if ((imid + base_input_current_9v) < max_input_current_9v)
+				pd->input_current_limit1 = base_input_current_9v + imid;
+			else
+				pd->input_current_limit1 = max_input_current_9v;
+			break;
+		case 12000:
+			if ((imid + base_input_current_12v) < max_input_current_12v)
+				pd->input_current_limit1 = base_input_current_12v + imid;
+			else
+				pd->input_current_limit1 = max_input_current_12v;
+			break;
+		}
+	} else {
+		switch (vbus) {
+		case 5000:
+			pd->input_current_limit1 = base_input_current_5v;
+			break;
+		case 9000:
+			pd->input_current_limit1 = base_input_current_9v; 
+			break;
+		case 12000:
+			pd->input_current_limit1 = base_input_current_12v; 
+			break;
+		}
+	}
+
 	pd_hal_set_input_current(alg,
 		CHG1, pd->input_current_limit1);
-	pd_dbg("%s run: vbus: %d, ibus_limit: %d", __func__, vbus, pd->input_current_limit1);
+
+	pd_info("%s: vbus=%d; input_current_limit1=%d\n", __func__, vbus, pd->input_current_limit1);
+
 	return 0;
 }
 
@@ -826,14 +878,14 @@ static int pd_dcs_set_charger(struct chg_alg_device *alg)
 		pd_hal_set_eoc_current(alg, CHG1,
 			pd->dual_polling_ieoc);
 		pd_hal_enable_termination(alg, CHG1, false);
-		pd_hal_safety_check(alg, pd->dual_polling_ieoc);
+		//pd_hal_safety_check(alg, pd->dual_polling_ieoc); //moved
 	} else if (pd->state == PD_TUNING) {
 		if (!chg2_chip_enabled)
 			pd_hal_charger_enable_chip(alg, CHG2, true);
 		pd_hal_enable_charger(alg, CHG2, true);
 		pd_hal_set_eoc_current(alg, CHG1, pd->dual_polling_ieoc);
 		pd_hal_enable_termination(alg, CHG1, false);
-		pd_hal_safety_check(alg, pd->dual_polling_ieoc);
+		//pd_hal_safety_check(alg, pd->dual_polling_ieoc); //moved
 	} else if (pd->state == PD_POSTCC) {
 		pd_hal_set_eoc_current(alg, CHG1, /*150000*/ pd->postcc_ieoc);
 		pd_hal_enable_termination(alg, CHG1, true);
@@ -848,6 +900,11 @@ static int pd_dcs_set_charger(struct chg_alg_device *alg)
 		CHG1, pd->input_current1);
 	pd_hal_set_cv(alg,
 		CHG1, pd->cv);
+
+	//moved
+	if (pd->state == PD_RUN || pd->state == PD_TUNING)  {
+		pd_hal_safety_check(alg, pd->dual_polling_ieoc);
+	}
 
 	pd_dbg("%s m:%d s:%d cv:%d chg1:%d,%d chg2:%d,%d chg2en:%d min:%d,%d,%d\n",
 		__func__,
@@ -1068,11 +1125,12 @@ static int pd_full_evt(struct chg_alg_device *alg)
 						CHG2, false);
 
 					/* workaround to avoid CHG1 EOC immediately */
-					pd_hal_enable_charger(alg, CHG1, false);
-					pd_hal_enable_charger(alg, CHG1, true);
+					//pd_hal_enable_charger(alg, CHG1, false);
+					//pd_hal_enable_charger(alg, CHG1, true);
 
 					pd_hal_set_eoc_current(alg,
 						CHG1, /*150000*/ pd->postcc_ieoc);
+					pd_hal_reset_eoc_state(alg, CHG1);
 					pd_hal_enable_termination(alg,
 						CHG1, true);
 				} else {

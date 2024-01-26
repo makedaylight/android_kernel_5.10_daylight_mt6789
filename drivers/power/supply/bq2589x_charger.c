@@ -1085,10 +1085,6 @@ int bq2589x_get_usb_type(struct bq2589x *bq, int *type)
 		bq->psy_desc.type = POWER_SUPPLY_TYPE_UNKNOWN;
 		usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 		pr_info("BQ2589X charger type: UNKNOW\n");
-		if (prev_pg) {
-			pr_info("Trigger dpdm to disconnect adb\n");
-			Charger_Detect_Init();
-		}
 		break;
 	case BQ2589X_VBUS_TYPE_SDP:
 		bq->psy_desc.type = POWER_SUPPLY_TYPE_USB;
@@ -2051,7 +2047,12 @@ static int bq2589x_chg_set_property(struct power_supply *psy,
 	pr_info("psp=%d\n", psp);
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
-		 bq2589x_force_dpdm(bq);
+		bq2589x_force_dpdm(bq);
+		pr_info("%s: val->intval = %d\n", __func__, val->intval);
+		if (!(val->intval)) {
+			pr_info("Trigger dpdm to disconnect adb\n");
+			Charger_Detect_Init();
+		}
 		break;
 	case POWER_SUPPLY_PROP_STATUS:
 			  ret = val->intval ? bq2589x_enable_charger(bq) : bq2589x_disable_charger(bq);

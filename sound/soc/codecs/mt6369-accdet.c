@@ -2186,6 +2186,7 @@ static inline int ext_eint_setup(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct device_node *node = pdev->dev.of_node;
+	struct irq_data *irq_data;
 
 	if (!node)
 		return -ENODEV;
@@ -2202,7 +2203,9 @@ static inline int ext_eint_setup(struct platform_device *pdev)
 		ret = PTR_ERR(accdet->pins_eint);
 		return ret;
 	}
-	pinctrl_select_state(accdet->pinctrl, accdet->pins_eint);
+	ret = pinctrl_select_state(accdet->pinctrl, accdet->pins_eint);
+	if (ret < 0)
+		return ret;
 
 	accdet->gpiopin = of_get_named_gpio(node, "deb-gpios", 0);
 	if (!gpio_is_valid(accdet->gpiopin))
@@ -2221,7 +2224,11 @@ static inline int ext_eint_setup(struct platform_device *pdev)
 		return accdet->gpioirq;
 	}
 
-	accdet->accdet_eint_type = irqd_get_trigger_type(irq_get_irq_data(accdet->gpioirq));
+	irq_data = irq_get_irq_data(accdet->gpioirq);
+	if (!irq_data)
+		dev_info(&pdev->dev, "irq_data is null\n");
+	else
+		accdet->accdet_eint_type = irqd_get_trigger_type(irq_data);
 
 	/* Enable interrupt when acccet init done */
 	irq_set_status_flags(accdet->gpioirq, IRQ_NOAUTOEN);

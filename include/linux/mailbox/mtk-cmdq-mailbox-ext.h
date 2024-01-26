@@ -216,7 +216,7 @@ do { \
 	pr_notice("[cmdq] "fmt"\n", ##args)
 
 #define cmdq_err(fmt, args...) \
-	pr_notice("[cmdq][err] "fmt" @%s,%u\n", ##args, __func__, __LINE__)
+	pr_err("[cmdq][err] "fmt" @%s,%u\n", ##args, __func__, __LINE__)
 
 #define cmdq_dump(fmt, args...) \
 	pr_notice("[cmdq][err] "fmt"\n", ##args)

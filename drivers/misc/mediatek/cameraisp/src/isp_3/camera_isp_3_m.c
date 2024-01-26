@@ -256,6 +256,9 @@ static int g_bWaitLock;
 static unsigned int g_log_def_constraint;
 #endif
 
+#ifdef _imgo_fbc_wrkarnd_
+static unsigned int shift_cnt;
+#endif
 #define ISP_ADDR (gISPSYS_Reg[ISP_BASE_ADDR])
 #define ISP_IMGSYS_BASE (gISPSYS_Reg[ISP_IMGSYS_CONFIG_BASE_ADDR])
 #define ISP_ADDR_CAMINF (gISPSYS_Reg[ISP_IMGSYS_CONFIG_BASE_ADDR])
@@ -1506,7 +1509,7 @@ bool ISP_chkModuleSetting(void)
 		unsigned int af_sat_th0, af_sat_th1, af_sat_th2, af_sat_th3;
 		unsigned int TG_W;
 		unsigned int TG_H;
-		unsigned int AF_EN, AFO_D_EN, AFO_EN;
+		unsigned int AF_EN, AFO_D_EN, AFO_EN, EIS_EN;
 		unsigned int SGG1_EN, SGG5_EN;
 		unsigned int cam_ctrl_en_p1_dma_d; /*4014*/
 		unsigned int cam_ctrl_en_p1_dma; /*4014*/
@@ -1653,6 +1656,7 @@ bool ISP_chkModuleSetting(void)
 		afo_ysize = ISP_RD32(ISP_ADDR + 0x348C);
 
 		AF_EN = (cam_ctrl_en_p1 >> 16) & 0x1;
+		EIS_EN = (cam_ctrl_en_p1 >> 21) & 0x01;
 		AFO_D_EN = (cam_ctrl_en_p1_dma_d >> 3) & 0x1;
 		AFO_EN = (cam_ctrl_en_p1_dma >> 8) & 0x1;
 		SGG1_EN = (cam_ctrl_en_p1 >> 15) & 0x1;
@@ -1965,6 +1969,9 @@ AF_EXIT:
 		}
 
 
+
+		if (EIS_EN == 0)
+			goto EIS_EXIT;
 /*Check EIS Setting */
 
 		// unsigned int rrz_out_width;
@@ -2172,6 +2179,8 @@ AF_EXIT:
 			pr_info("grab_width:%d, grab_height:%d, bmx_width:%d, bmx_height:%d",
 				grab_width, grab_height, bmx_width, bmx_height);
 		}
+EIS_EXIT:
+		log_inf("EIS_%d check end\n", EIS_EN);
 	}
 #if (ISP_RAW_D_SUPPORT == 1)
 	if (cam_tg2_vf_con & 0x01) {
@@ -4661,7 +4670,7 @@ static unsigned int m_LastMNum[_rt_dma_max_] = {0}; /* imgo/rrzo */
 static long ISP_Buf_CTRL_FUNC(unsigned long Param)
 {
 	signed int Ret = 0;
-	unsigned int rt_dma;
+	unsigned int rt_dma, target_dma;
 	unsigned int reg_val = 0;
 	unsigned int reg_val2 = 0;
 	unsigned int camsv_reg_cal[2] = {0, 0};
@@ -5370,10 +5379,24 @@ for (i = 0; i < ISP_RT_BUF_SIZE; i++) {
 			}
 		}
 		if (_bypass == MFALSE) {
-			if ((p1_fbc[rt_dma].Bits.FB_NUM ==
-			     p1_fbc[rt_dma].Bits.FBC_CNT) ||
-			    ((p1_fbc[rt_dma].Bits.FB_NUM - 1) ==
-			     p1_fbc[rt_dma].Bits.FBC_CNT)) {
+			#ifdef _imgo_fbc_wrkarnd_
+			//for main cam
+			if (_openedDma == 2 && ch_imgo == _imgo_ && ch_rrzo == _rrzo_){
+				if(p1_fbc[_imgo_].Bits.FBC_CNT > p1_fbc[_rrzo_].Bits.FBC_CNT)
+					target_dma = _imgo_;
+				else
+					target_dma = _rrzo_;
+			} else{
+				target_dma = rt_dma;
+			}
+			#else
+			target_dma = rt_dma;
+			#endif
+
+			if ((p1_fbc[target_dma].Bits.FB_NUM ==
+			     p1_fbc[target_dma].Bits.FBC_CNT) ||
+			    ((p1_fbc[target_dma].Bits.FB_NUM - 1) ==
+			     p1_fbc[target_dma].Bits.FBC_CNT)) {
 
 				if (IspInfo.DebugMask & ISP_DBG_BUF_CTRL)
 					IRQ_LOG_KEEPER(irqT, 0, _LOG_DBG,
@@ -5619,6 +5642,23 @@ LOG_BYPASS:
 						 .read_idx + 1) %
 					pstRTBuf->ring_buf[rt_dma]
 						.total_count;
+#ifdef _imgo_fbc_wrkarnd_
+				/* 2. for case "shift_cnt == 2", add one more read_idx,
+				 * to "skip" the abnormal frame, which can be told from shift_cnt.
+				 * The meaning of shift_cnt==2 is that ringbuffer has been checked
+				 * twice in ISP_DONE_Buf_Time, to make sure HW idx(which is WCNT)
+				 * and SW idx(.start) are matched.
+				 * Otherwise, img header err may be observed accordinglly.
+				 */
+				if (shift_cnt == 2){
+					//add by 1
+					pstRTBuf->ring_buf[rt_dma].read_idx =
+							(pstRTBuf->ring_buf[rt_dma]
+								 .read_idx + 1) %
+							pstRTBuf->ring_buf[rt_dma]
+								.total_count;
+				}
+#endif
 				if (deque_buf->count != P1_DEQUE_CNT) {
 					log_err("support only deque	1 buf at 1 time\n");
 					deque_buf->count = P1_DEQUE_CNT;
@@ -7158,18 +7198,24 @@ static signed int ISP_DONE_Buf_Time(enum eISPIrq irqT, union CQ_RTBC_FBC *pFbc,
 	/* dynamic dma port     ctrl */
 	if (pstRTBuf->ring_buf[ch_imgo].active &&
 		pstRTBuf->ring_buf[ch_rrzo].active) {
-		#ifdef _imgo_fbc_wrkarnd_
-		// work around for imgo WCNT do not update
-		// take rrzo wcnt as ref instead
-		_dma_cur_fbc = rrzo_fbc;
-		_working_dma = ch_rrzo;
+#ifdef _imgo_fbc_wrkarnd_
+		// 1. take larger fbc_cnt as ref
+		if (imgo_fbc.Bits.FBC_CNT >
+			rrzo_fbc.Bits.FBC_CNT) {
+			_dma_cur_fbc = imgo_fbc;
+			_working_dma = ch_imgo;
+		} else {
+			_dma_cur_fbc = rrzo_fbc;
+			_working_dma = ch_rrzo;
+		}
+
 		if (rrzo_fbc.Bits.WCNT != imgo_fbc.Bits.WCNT)
 			IRQ_LOG_KEEPER(
 				irqT, m_CurrentPPB, _LOG_INF,
 				"[rtbc_%d]:wcnt mismatch(%d,%d)!\n", irqT,
 				imgo_fbc.Bits.WCNT,
 				rrzo_fbc.Bits.WCNT);
-		#else
+#else
 		/* if P1_DON ISR is coming at */
 		/* output 2 imgo frames, */
 		/* but 1 rrzo frame */
@@ -7184,7 +7230,7 @@ static signed int ISP_DONE_Buf_Time(enum eISPIrq irqT, union CQ_RTBC_FBC *pFbc,
 			_dma_cur_fbc = imgo_fbc;
 			_working_dma = ch_imgo;
 		}
-		#endif
+#endif
 	} else if (pstRTBuf->ring_buf[ch_imgo].active) {
 		_dma_cur_fbc = imgo_fbc;
 		_working_dma = ch_imgo;
@@ -7230,7 +7276,10 @@ static signed int ISP_DONE_Buf_Time(enum eISPIrq irqT, union CQ_RTBC_FBC *pFbc,
 		   */
 	}
 #endif
-
+#ifdef _imgo_fbc_wrkarnd_
+	//reset shift_cnt
+	shift_cnt = 0;
+#endif
 #ifdef _rtbc_buf_que_2_0_
 	for (k = 0; k < shiftT + 1; k++)
 #endif
@@ -7287,6 +7336,10 @@ static signed int ISP_DONE_Buf_Time(enum eISPIrq irqT, union CQ_RTBC_FBC *pFbc,
 						pstRTBuf->ring_buf[i_dma]
 							.total_count;
 					pstRTBuf->ring_buf[i_dma].empty_count--;
+#ifdef _imgo_fbc_wrkarnd_
+					if (i == 0)
+						shift_cnt++;
+#endif
 					/*      */
 					if (g1stSof[irqT] == MTRUE)
 						log_err("Done&&Sof receive at the same time in 1st f(%d)\n",
@@ -7331,7 +7384,6 @@ static signed int ISP_DONE_Buf_Time(enum eISPIrq irqT, union CQ_RTBC_FBC *pFbc,
 			pstRTBuf->ring_buf[i_dma].img_cnt = sof_count[out];
 		}
 	}
-
 	if (pstRTBuf->ring_buf[ch_imgo].active &&
 	    pstRTBuf->ring_buf[ch_rrzo].active) {
 		if (pstRTBuf->ring_buf[ch_imgo].start !=
@@ -10088,19 +10140,20 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(signed int Irq, void *DeviceId)
 
 		G_PM_QOS[ISP_PASS1_PATH_TYPE_RAW].sof_flag = MTRUE;
 
-		#ifdef _imgo_fbc_wrkarnd_
-		// work around for imgo WCNT do not update
-		// take rrzo wcnt as ref first
-		if (pstRTBuf->ring_buf[_rrzo_].active) {
-			_dmaport = 1;
-			rt_dma = _rrzo_;
-		} else if (pstRTBuf->ring_buf[_imgo_].active) {
+#ifdef _imgo_fbc_wrkarnd_
+		/* work around for abnormal behavior: IMGO(WCNT+0) or (WCNT+2)
+		 * take larger fbc_cnt as ref to make sure the one with larger FBC_CNT
+		 * will satisfy "lost p1 don" condition.
+		 * p1_fbc[0] -> IMGO_FBC, p1_fbc[1] -> RRZO_FBC
+		 */
+		if (p1_fbc[0].Bits.FBC_CNT > p1_fbc[1].Bits.FBC_CNT){
 			_dmaport = 0;
 			rt_dma = _imgo_;
-		} else {
-			log_err("no main dma port opened at	SOF\n");
+		}else{
+			_dmaport = 1;
+			rt_dma = _rrzo_;
 		}
-		#else
+#else
 		if (pstRTBuf->ring_buf[_imgo_].active) {
 			_dmaport = 0;
 			rt_dma = _imgo_;
@@ -10110,7 +10163,7 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(signed int Irq, void *DeviceId)
 		} else {
 			log_err("no main dma port opened at	SOF\n");
 		}
-		#endif
+#endif
 		/* chk this     frame have EOF or not, dynimic dma port chk */
 		if (p1_fbc[_dmaport].Bits.FB_NUM ==
 		    p1_fbc[_dmaport].Bits.FBC_CNT) {
@@ -10225,7 +10278,7 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(signed int Irq, void *DeviceId)
 			_fbc_chk[1].Reg_val = ISP_RD32(ISP_REG_ADDR_RRZO_FBC);
 			IRQ_LOG_KEEPER(
 				_IRQ, m_CurrentPPB, _LOG_INF,
-				"P1_SOF_%d_%d(0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,AAO(0x%x,0x%x,0x%x),D_%d(%d/%d)_Filled(%d_%d_%d),D_%d(%d/%d)_Filled(%d_%d_%d) )\n",
+				"P1_SOF_%d_%d(0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,AAO(0x%x,0x%x,0x%x),D_%d(%d/%d)_Filled(%d_%d_%d)_PA(0x%x_0x%x_0x%x),D_%d(%d/%d)_Filled(%d_%d_%d)_PA(0x%x_0x%x_0x%x))\n",
 				sof_count[_PASS1], cur_v_cnt,
 				(unsigned int)(_fbc_chk[0].Reg_val),
 				(unsigned int)(_fbc_chk[1].Reg_val),
@@ -10247,12 +10300,18 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(signed int Irq, void *DeviceId)
 				pstRTBuf->ring_buf[_imgo_].data[0].bFilled,
 				pstRTBuf->ring_buf[_imgo_].data[1].bFilled,
 				pstRTBuf->ring_buf[_imgo_].data[2].bFilled,
+				pstRTBuf->ring_buf[_imgo_].data[0].base_pAddr,
+				pstRTBuf->ring_buf[_imgo_].data[1].base_pAddr,
+				pstRTBuf->ring_buf[_imgo_].data[2].base_pAddr,
 				_rrzo_,
 				pstRTBuf->ring_buf[_rrzo_].start,
 				pstRTBuf->ring_buf[_rrzo_].read_idx,
 				pstRTBuf->ring_buf[_rrzo_].data[0].bFilled,
 				pstRTBuf->ring_buf[_rrzo_].data[1].bFilled,
-				pstRTBuf->ring_buf[_rrzo_].data[2].bFilled);
+				pstRTBuf->ring_buf[_rrzo_].data[2].bFilled,
+				pstRTBuf->ring_buf[_rrzo_].data[0].base_pAddr,
+				pstRTBuf->ring_buf[_rrzo_].data[1].base_pAddr,
+				pstRTBuf->ring_buf[_rrzo_].data[2].base_pAddr);
 			/* 1 port is enough     */
 			if (pstRTBuf->ring_buf[_imgo_].active) {
 				if (_fbc_chk[0].Bits.WCNT !=
@@ -11409,7 +11468,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 					Ret = -EFAULT;
 					break;
 				}
-				log_inf("User_%s(%d), type(%d)",
+				log_inf("ISP_FLUSH_IRQ_REQUEST User_%s(%d), type(%d)",
 					IrqUserKey_UserInfo[IrqInfo.UserInfo
 								    .UserKey]
 						.userName,

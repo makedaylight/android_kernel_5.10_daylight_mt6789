@@ -96,6 +96,10 @@ int mtk_scp_audio_init_mem(void)
 
 	//init A2D/D2A share mem
 	task_base = get_taskbase_by_daiid(SCP_AUD_TASK_SPK_PROCESS_ID);
+	if (task_base == NULL) {
+		pr_err("%s(), get_taskbase_by_daiid Fail!!!\n", __func__);
+		return -1;
+	}
 	vaddr = gen_pool_alloc(scp_audio->genpool, A2D_SHAREMEM_SIZE);
 	if (!vaddr) {
 		pr_err("%s(), alloc ATOD mem vaddr Fail!!!\n", __func__);

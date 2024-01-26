@@ -12,9 +12,13 @@
 #include <linux/platform_device.h>
 
 #include <linux/proc_fs.h>
+#include <linux/uidgid.h>
 
 #define	LID_DEV_NAME	"hall_sensor"
 #define HALL_INPUT	"/dev/input/hall_dev"
+
+static kuid_t uid = KUIDT_INIT(1000);
+static kgid_t gid = KGIDT_INIT(1000);
 
 struct hall_data {
 	int gpio;	/* device use gpio number */
@@ -166,9 +170,13 @@ static int hall_driver_procfs_init(struct hall_data *data)
 	struct proc_dir_entry *root;
 
 	root = proc_mkdir(PROC_FILE_HALL, NULL);
+	if (root)
+		proc_set_user(root, uid, gid);
 
 	file = proc_create_data(HALL_IRQ_ENABLED, 0664, NULL,
 		&hall_irq_enabled_procfs_fops, data);
+	if (file)
+		proc_set_user(file, uid, gid);
 
 	return 0;
 }

@@ -2167,7 +2167,10 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 
 		sg_init_one(&sg, rxbuf->buf_va, rxbuf->buf_sz);
 		err = virtqueue_add_inbuf(vds->rxvq, &sg, 1, rxbuf, GFP_KERNEL);
-		WARN_ON(err);	/* sanity check; this can't really happen */
+		if (err) {
+			WARN_ON(err);	/* sanity check; this can't really happen */
+			goto err_free_rx_buffers;
+		}
 	}
 
 	vdev->priv = vds;

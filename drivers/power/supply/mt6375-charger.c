@@ -1522,12 +1522,14 @@ static int mt6375_sw_check_eoc(struct charger_device *chgdev, u32 uA)
 		dev_err(ddata->dev, "failed to get ibat\n");
 		return ret;
 	}
+	mt_dbg(ddata->dev, "%s: ieoc=%u, ibat=%d\n", __func__, uA, ibat);
 
 	if (ibat <= uA) {
+		dev_info(ddata->dev, "%s: ieoc=%u, ibat=%d; eoc_cnt=%d\n", __func__, uA, ibat, atomic_read(&ddata->eoc_cnt));
 		/* if it happens 3 times, trigger EOC event */
 		if (atomic_read(&ddata->eoc_cnt) == 2) {
 			atomic_set(&ddata->eoc_cnt, 0);
-			mt_dbg(ddata->dev, "ieoc=%d, ibat=%d\n", uA, ibat);
+			dev_notice(ddata->dev, "%s: Trigger EOC event! (ieoc=%u, ibat=%d)\n", __func__, uA, ibat);
 			charger_dev_notify(ddata->chgdev,
 					   CHARGER_DEV_NOTIFY_EOC);
 		} else

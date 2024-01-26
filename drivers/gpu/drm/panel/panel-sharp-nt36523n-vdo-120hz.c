@@ -55,6 +55,14 @@
 #define LCM_DEV_LOGI(fmt, args...)	dev_info(ctx->dev, "[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
 #define LCM_LOGI(fmt, args...)		pr_info("[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
 
+#define MSG_SIZE 128
+#if IS_ENABLED(CONFIG_MTPROF)
+extern void bootprof_log_boot(char *str);
+#define LCM_BOOTPROF_LOG(str)		bootprof_log_boot(str)
+#else
+#define LCM_BOOTPROF_LOG(str)
+#endif
+
 // ---------------------------------------------------------------------------
 
 struct sharp {
@@ -74,11 +82,11 @@ struct sharp {
 	struct gpio_desc *bias_pos;
 	struct gpio_desc *bias_neg;
 
+	const char *panel_sample;
 	unsigned int sample_id1;
 	unsigned int sample_id2;
 	unsigned int sample_id3;
 	unsigned int lcm_config;
-
 	unsigned int islcmfound;
 
 	int error;
@@ -91,49 +99,50 @@ static void sharp_check_sample_id(struct sharp *ctx)
 	LCM_DEV_LOGI("+++");
 
 	if (ctx->sample_id2 == SHARP_PRE_TS_ID2) {
-		LCM_DEV_LOGI("Use Pre-TS Config\n");
 		ctx->lcm_config = PRE_TS_CONFIG;
+		ctx->panel_sample = "Pre-TS";
 	} else {
 		if (ctx->sample_id1 == SHARP_TS_ID1) {
-			LCM_DEV_LOGI("Use TS Config\n");
 			ctx->lcm_config = TS_CONFIG;
+			ctx->panel_sample = "TS";
 		} else if ((ctx->sample_id1 & 0xf0) == SHARP_ES_ID1) {
 			if (ctx->sample_id3 == SHARP_PRE_ES_ID3) {
-				LCM_DEV_LOGI("Use Pre-ES Config\n");
 				ctx->lcm_config = PRE_ES_CONFIG;
+				ctx->panel_sample = "Pre-ES";
 			} else {
 				if (ctx->sample_id1 == SHARP_ES_ID1) {
-					LCM_DEV_LOGI("Use ES Config\n");
 					ctx->lcm_config = ES_CONFIG;
+					ctx->panel_sample = "ES";
 				} else if (ctx->sample_id1 == SHARP_ES2_1_ID1) {
-					LCM_DEV_LOGI("Use ES2-1 Config\n");
 					ctx->lcm_config = ES2_1_CONFIG;
+					ctx->panel_sample = "ES2-1";
 				} else if (ctx->sample_id1 == SHARP_ES2_2_ID1) {
-					LCM_DEV_LOGI("Use ES2-2 Config\n");
 					ctx->lcm_config = ES2_2_CONFIG;
+					ctx->panel_sample = "ES2-2";
 				} else /*if (ctx->sample_id1 == SHARP_ES3_ID1)*/ {
-					LCM_DEV_LOGI("Use ES3 Config\n");
 					ctx->lcm_config = ES3_CONFIG;
+					ctx->panel_sample = "ES3";
 				}
 			}
 		} else if ((ctx->sample_id1 & 0xf0) == SHARP_CS_ID1) {
 			/*if (ctx->sample_id1 == SHARP_CS_ID1)*/ {
-				LCM_LOGI("Use CS Config\n");
 				ctx->lcm_config = CS_CONFIG;
+				ctx->panel_sample = "CS";
 			}
 		} else if ((ctx->sample_id1 & 0xf0) == SHARP_MP_ID1) {
 			/*if (ctx->sample_id1 == SHARP_MP_ID1)*/ {
-				LCM_LOGI("Use MP Config\n");
 				ctx->lcm_config = MP_CONFIG;
+				ctx->panel_sample = "MP";
 			}
 		} else {
 			LCM_LOGI("Unknown Sample ID (id1: 0x%02x, id2: 0x%02x)\n",
 				ctx->sample_id1, ctx->sample_id2);
-			LCM_LOGI("Use Pre-TS Config\n");
 			ctx->lcm_config = PRE_TS_CONFIG;
+			ctx->panel_sample = "Pre-TS";
 		}
 	}
 	LCM_DEV_LOGI("ctx->lcm_config: 0x%X\n", ctx->lcm_config);
+	LCM_DEV_LOGI("Use %s Config\n", ctx->panel_sample);
 
 	LCM_DEV_LOGD("---");
 }
@@ -956,28 +965,34 @@ PANEL_EXT_PARAMS_120HZ_DSC_DYN(_fps##hz_dsc_vfp_frameskip, _vfp, _vfp_lp, 0, 0xF
 #define PANEL_EXT_PARAMS_120HZ_DSC_FRAMESKIP(_fps, _base_fps, _cmd0, _data0, _cmd1, _data1, _cmd2, _data2) \
 PANEL_EXT_PARAMS_120HZ_DSC_DYN(_fps##hz_dsc_frameskip, VFP_120HZ_3X_DSC, VFP_120HZ_3X_DSC, _base_fps, _cmd0, _data0, _cmd1, _data1, _cmd2, _data2, 0)
 
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+    #define VFP_120HZ_3X_DSC_VFP_LP_IDLE (VFP_120HZ_3X_DSC_VFP_45HZ)
+#else
+    #define VFP_120HZ_3X_DSC_VFP_LP_IDLE (VFP_120HZ_3X_DSC)
+#endif
+
 // ext_params_60hz_only
 static PANEL_EXT_PARAMS_NO_DYN(60, DATA_RATE_60HZ_NO_DSC, HFP_60HZ_NO_DSC, VFP_60HZ_NO_DSC, VFP_60HZ_NO_DSC, 60, 0);
 // ext_params_120hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(120, VFP_120HZ_3X_DSC, VFP_120HZ_3X_DSC);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(120, VFP_120HZ_3X_DSC, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_90hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(90, VFP_120HZ_3X_DSC_VFP_90HZ, VFP_120HZ_3X_DSC_VFP_90HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(90, VFP_120HZ_3X_DSC_VFP_90HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_72hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(72, VFP_120HZ_3X_DSC_VFP_72HZ, VFP_120HZ_3X_DSC_VFP_72HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(72, VFP_120HZ_3X_DSC_VFP_72HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_60hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(60, VFP_120HZ_3X_DSC_VFP_60HZ, VFP_120HZ_3X_DSC_VFP_60HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(60, VFP_120HZ_3X_DSC_VFP_60HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_45hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(45, VFP_120HZ_3X_DSC_VFP_45HZ, VFP_120HZ_3X_DSC_VFP_45HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(45, VFP_120HZ_3X_DSC_VFP_45HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_30hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(30, VFP_120HZ_3X_DSC_VFP_30HZ, VFP_120HZ_3X_DSC_VFP_30HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(30, VFP_120HZ_3X_DSC_VFP_30HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_24hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(24, VFP_120HZ_3X_DSC_VFP_24HZ, VFP_120HZ_3X_DSC_VFP_24HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(24, VFP_120HZ_3X_DSC_VFP_24HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_15hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(15, VFP_120HZ_3X_DSC_VFP_15HZ, VFP_120HZ_3X_DSC_VFP_15HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(15, VFP_120HZ_3X_DSC_VFP_15HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_10hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(10, VFP_120HZ_3X_DSC_VFP_10HZ, VFP_120HZ_3X_DSC_VFP_10HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(10, VFP_120HZ_3X_DSC_VFP_10HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_6hz_dsc_vfp
-static PANEL_EXT_PARAMS_120HZ_DSC_VFP(6, VFP_120HZ_3X_DSC_VFP_6HZ, VFP_120HZ_3X_DSC_VFP_6HZ);
+static PANEL_EXT_PARAMS_120HZ_DSC_VFP(6, VFP_120HZ_3X_DSC_VFP_6HZ, VFP_120HZ_3X_DSC_VFP_LP_IDLE);
 // ext_params_120hz_dsc_vfp_frameskip
 static PANEL_EXT_PARAMS_120HZ_DSC_VFP_FRAMESKIP(120, VFP_120HZ_3X_DSC, VFP_120HZ_3X_DSC);
 // ext_params_90hz_dsc_vfp_frameskip
@@ -1504,37 +1519,7 @@ static ssize_t sharp_state_show(struct device *dev,
 	char *s = buf;
 
 	s += sprintf(s, "Found: %d , ", ctx->islcmfound);
-
-	switch (ctx->lcm_config & SAMPLE_MASK) {
-	case SAMPLE_MP:
-		s += sprintf(s, "Panel: MP sample\n");
-		break;
-	case SAMPLE_CS:
-		s += sprintf(s, "Panel: CS sample\n");
-		break;
-	case SAMPLE_ES3:
-		s += sprintf(s, "Panel: ES3 sample\n");
-		break;
-	case SAMPLE_ES2_2:
-		s += sprintf(s, "Panel: ES2-2 sample\n");
-		break;
-	case SAMPLE_ES2_1:
-		s += sprintf(s, "Panel: ES2-1 sample\n");
-		break;
-	case SAMPLE_ES:
-		s += sprintf(s, "Panel: ES sample\n");
-		break;
-	case SAMPLE_PRE_ES:
-		s += sprintf(s, "Panel: Pre ES sample\n");
-		break;
-	case SAMPLE_TS:
-		s += sprintf(s, "Panel: TS sample\n");
-		break;
-	case SAMPLE_PRE_TS:
-	default:
-		s += sprintf(s, "Panel: Pre TS sample\n");
-		break;
-	}
+	s += sprintf(s, "Panel: %s sample\n", ctx->panel_sample);
 
 	return (s - buf);
 }
@@ -1546,6 +1531,7 @@ static int sharp_probe(struct mipi_dsi_device *dsi)
 	struct device_node *dsi_node, *remote_node = NULL, *endpoint = NULL;
 	struct sharp *ctx;
 	int ret;
+	char msgbuf[MSG_SIZE];
 
 	LCM_LOGI("+++\n");
 
@@ -1686,6 +1672,9 @@ static int sharp_probe(struct mipi_dsi_device *dsi)
 
 	device_create_file(ctx->dev, &dev_attr_state);
 
+	LCM_BOOTPROF_LOG("[LCM] Driver probe success");
+	scnprintf(msgbuf, sizeof(msgbuf), "[LCM] Panel: %s sample", ctx->panel_sample);
+	LCM_BOOTPROF_LOG(msgbuf);
 	LCM_DEV_LOGI("---");
 
 	return ret;

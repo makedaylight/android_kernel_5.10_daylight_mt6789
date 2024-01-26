@@ -22,6 +22,12 @@
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 
+//#define MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+#undef dev_dbg
+#define dev_dbg(dev, fmt, arg...) _dev_info(dev, fmt, ##arg)
+#endif
+
 /* version V1 sub-banks offset base address */
 /* banks shared by multiple phys */
 #define SSUSB_SIFSLV_V1_SPLLC		0x000	/* shared by u3 phys */
@@ -75,6 +81,8 @@
 #define PA5_RG_U2_HSTX_SRCAL_EN	BIT(15)
 #define PA5_RG_U2_HSTX_SRCTRL		GENMASK(14, 12)
 #define PA5_RG_U2_HSTX_SRCTRL_VAL(x)	((0x7 & (x)) << 12)
+#define PA5_RG_U2_HSTX_SRCTRL_MASK	(0x7)
+#define PA5_RG_U2_HSTX_SRCTRL_OFST	(12)
 #define PA5_RG_U2_HS_100U_U3_EN	BIT(11)
 
 #define U3P_USBPHYACR6		0x018
@@ -349,6 +357,7 @@
 #define PHY_REV6_STR "phy_rev6"
 #define DISCTH_STR "discth"
 #define RX_SQTH_STR "rx_sqth"
+#define HSTX_SRCTRL_STR "hstx_srctrl"
 #define SIB_STR	"sib"
 #define LOOPBACK_STR "loopback_test"
 
@@ -1084,6 +1093,67 @@ static const struct proc_ops proc_rx_sqth_fops = {
 	.proc_lseek = seq_lseek,
 	.proc_release = single_release,
 };
+
+static int proc_hstx_srctrl_show(struct seq_file *s, void *unused)
+{
+	struct mtk_phy_instance *instance = s->private;
+	struct u2phy_banks *u2_banks = &instance->u2_banks;
+	void __iomem *com = u2_banks->com;
+	u32 tmp;
+	char str[16];
+
+	tmp = readl(com + U3P_USBPHYACR5);
+	tmp >>= PA5_RG_U2_HSTX_SRCTRL_OFST;
+	tmp &= PA5_RG_U2_HSTX_SRCTRL_MASK;
+
+	cover_val_to_str(tmp, 3, str);
+
+	seq_printf(s, "\n%s = %s\n", HSTX_SRCTRL_STR, str);
+	return 0;
+}
+
+static int proc_hstx_srctrl_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_hstx_srctrl_show, PDE_DATA(inode));
+}
+
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+static ssize_t proc_hstx_srctrl_write(struct file *file,
+	const char __user *ubuf, size_t count, loff_t *ppos)
+{
+	struct seq_file *s = file->private_data;
+	struct mtk_phy_instance *instance = s->private;
+	struct u2phy_banks *u2_banks = &instance->u2_banks;
+	void __iomem *com = u2_banks->com;
+	char buf[20];
+	u32 tmp, val;
+
+	memset(buf, 0x00, sizeof(buf));
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count)))
+		return -EFAULT;
+
+	if (kstrtouint(buf, 2, &val))
+		return -EINVAL;
+
+	tmp = readl(com + U3P_USBPHYACR5);
+	tmp &= ~PA5_RG_U2_HSTX_SRCTRL;
+	tmp |= PA5_RG_U2_HSTX_SRCTRL_VAL(val);
+	writel(tmp, com + U3P_USBPHYACR5);
+
+	return count;
+}
+#endif
+
+static const struct proc_ops proc_hstx_srctrl_fops = {
+	.proc_open = proc_hstx_srctrl_open,
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	.proc_write = proc_hstx_srctrl_write,
+#endif
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release,
+};
+
 static int u2_phy_procfs_init(struct mtk_tphy *tphy,
 			struct mtk_phy_instance *instance)
 {
@@ -1150,6 +1220,19 @@ static int u2_phy_procfs_init(struct mtk_tphy *tphy,
 			phy_root, &proc_rx_sqth_fops, instance);
 	if (!file) {
 		dev_info(dev, "failed to creat proc file: %s\n", RX_SQTH_STR);
+		ret = -ENOMEM;
+		goto err1;
+	}
+
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	file = proc_create_data(HSTX_SRCTRL_STR, 0644,
+			phy_root, &proc_hstx_srctrl_fops, instance);
+#else
+	file = proc_create_data(HSTX_SRCTRL_STR, 0444,
+			phy_root, &proc_hstx_srctrl_fops, instance);
+#endif
+	if (!file) {
+		dev_info(dev, "failed to creat proc file: %s\n", HSTX_SRCTRL_STR);
 		ret = -ENOMEM;
 		goto err1;
 	}
@@ -1335,7 +1418,7 @@ static void hs_slew_rate_calibrate(struct mtk_tphy *tphy,
 		/* if FM detection fail, set default value */
 		calibration_val = 4;
 	}
-	dev_dbg(tphy->dev, "phy:%d, fm_out:%d, calib:%d (clk:%d, coef:%d)\n",
+	dev_info(tphy->dev, "phy:%d, fm_out:%d, calib:%d (clk:%d, coef:%d)\n",
 		instance->index, fm_out, calibration_val,
 		tphy->src_ref_clk, tphy->src_coef);
 
@@ -2094,6 +2177,12 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp = readl(com + U3P_U2PHYBC12C);
 		tmp |= P2C_RG_CHGDT_EN;	/* BC1.2 path Enable */
 		writel(tmp, com + U3P_U2PHYBC12C);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_U2PHYBC12C);
+		tmp = ((tmp & P2C_RG_CHGDT_EN) >> (ffs((unsigned int)P2C_RG_CHGDT_EN) - 1));
+		dev_info(dev, "current bc12:%d\n", tmp);
+#endif
 	}
 
 	if (instance->eye_src) {
@@ -2101,6 +2190,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA5_RG_U2_HSTX_SRCTRL;
 		tmp |= PA5_RG_U2_HSTX_SRCTRL_VAL(instance->eye_src);
 		writel(tmp, com + U3P_USBPHYACR5);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR5);
+		tmp >>= PA5_RG_U2_HSTX_SRCTRL_OFST;
+		tmp &= PA5_RG_U2_HSTX_SRCTRL_MASK;
+		dev_info(dev, "current src:%d\n", tmp);
+#endif
 	}
 
 	if (instance->eye_vrt) {
@@ -2108,6 +2204,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA1_RG_VRT_SEL;
 		tmp |= PA1_RG_VRT_SEL_VAL(instance->eye_vrt);
 		writel(tmp, com + U3P_USBPHYACR1);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR1);
+		tmp >>= PA1_RG_VRT_SEL_OFST;
+		tmp &= PA1_RG_VRT_SEL_MASK;
+		dev_info(dev, "current vrt:%d\n", tmp);
+#endif
 	}
 
 	if (instance->eye_term) {
@@ -2115,6 +2218,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA1_RG_TERM_SEL;
 		tmp |= PA1_RG_TERM_SEL_VAL(instance->eye_term);
 		writel(tmp, com + U3P_USBPHYACR1);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR1);
+		tmp >>= PA1_RG_TERM_SEL_OFST;
+		tmp &= PA1_RG_TERM_SEL_MASK;
+		dev_info(dev, "current term:%d\n", tmp);
+#endif
 	}
 
 	if (instance->intr) {
@@ -2122,6 +2232,12 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA1_RG_INTR_CAL;
 		tmp |= PA1_RG_INTR_CAL_VAL(instance->intr);
 		writel(tmp, com + U3P_USBPHYACR1);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR1);
+		tmp = ((tmp & PA1_RG_INTR_CAL) >> (ffs((unsigned int)PA1_RG_INTR_CAL) - 1));
+		dev_info(dev, "current intr:%d\n", tmp);
+#endif
 	}
 
 	if (instance->discth) {
@@ -2129,6 +2245,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA6_RG_U2_DISCTH;
 		tmp |= PA6_RG_U2_DISCTH_VAL(instance->discth);
 		writel(tmp, com + U3P_USBPHYACR6);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR6);
+		tmp >>= PA6_RG_U2_DISCTH_OFET;
+		tmp &= PA6_RG_U2_DISCTH_MASK;
+		dev_info(dev, "current disc:%d\n", tmp);
+#endif
 	}
 
 	if (instance->rx_sqth) {
@@ -2136,6 +2259,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA6_RG_U2_SQTH;
 		tmp |= PA6_RG_U2_SQTH_VAL(instance->rx_sqth);
 		writel(tmp, com + U3P_USBPHYACR6);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR6);
+		tmp >>= PA6_RG_U2_SQTH_OFET;
+		tmp &= PA6_RG_U2_SQTH_MASK;
+		dev_info(dev, "current rx_sqth:%d\n", tmp);
+#endif
 	}
 
 	if (instance->rev4) {
@@ -2143,6 +2273,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA6_RG_U2_PHY_REV4;
 		tmp |= PA6_RG_U2_PHY_REV4_VAL(instance->rev4);
 		writel(tmp, com + U3P_USBPHYACR6);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR6);
+		tmp >>= PA6_RG_U2_PHY_REV4_OFET;
+		tmp &= PA6_RG_U2_PHY_REV4_MASK;
+		dev_info(dev, "current rev4:%d\n", tmp);
+#endif
 	}
 
 	if (instance->rev6) {
@@ -2150,6 +2287,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA6_RG_U2_PHY_REV6;
 		tmp |= PA6_RG_U2_PHY_REV6_VAL(instance->rev6);
 		writel(tmp, com + U3P_USBPHYACR6);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR6);
+		tmp >>= PA6_RG_U2_PHY_REV6_OFET;
+		tmp &= PA6_RG_U2_PHY_REV6_MASK;
+		dev_info(dev, "current rev6:%d\n", tmp);
+#endif
 	}
 
 	if (instance->pll_bw) {
@@ -2157,6 +2301,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA2_RG_USB20_PLL_BW;
 		tmp |= PA2_RG_USB20_PLL_BW_VAL(instance->pll_bw);
 		writel(tmp, com + U3P_USBPHYACR2);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR2);
+		tmp >>= PA2_RG_USB20_PLL_BW_OFET;
+		tmp &= PA2_RG_USB20_PLL_BW_MASK;
+		dev_info(dev, "current pll-bw:%d\n", tmp);
+#endif
 	}
 
 	if (instance->bgr_div) {
@@ -2164,6 +2315,13 @@ static void u2_phy_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA0_RG_USB20_BGR_DIV;
 		tmp |= PA0_RG_USB20_BGR_DIV_VAL(instance->bgr_div);
 		writel(tmp, com + U3P_USBPHYACR0);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR2);
+		tmp >>= PA0_RG_USB20_BGR_DIV_OFET;
+		tmp &= PA0_RG_USB20_BGR_DIV_MASK;
+		dev_info(dev, "current bgr-div:%d\n", tmp);
+#endif
 	}
 
 }
@@ -2173,13 +2331,25 @@ static void u2_phy_host_props_set(struct mtk_tphy *tphy,
 {
 	struct u2phy_banks *u2_banks = &instance->u2_banks;
 	void __iomem *com = u2_banks->com;
+	struct device *dev = &instance->phy->dev;
 	u32 tmp;
+
+	dev_info(dev, "host src:%d, vrt:%d, term:%d, rev6:%d\n",
+		instance->eye_src_host, instance->eye_vrt_host,
+		instance->eye_term_host, instance->rev6_host);
 
 	if (instance->eye_src_host) {
 		tmp = readl(com + U3P_USBPHYACR5);
 		tmp &= ~PA5_RG_U2_HSTX_SRCTRL;
 		tmp |= PA5_RG_U2_HSTX_SRCTRL_VAL(instance->eye_src_host);
 		writel(tmp, com + U3P_USBPHYACR5);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR5);
+		tmp >>= PA5_RG_U2_HSTX_SRCTRL_OFST;
+		tmp &= PA5_RG_U2_HSTX_SRCTRL_MASK;
+		dev_info(dev, "current src:%d\n", tmp);
+#endif
 	}
 
 	if (instance->eye_vrt_host) {
@@ -2187,6 +2357,13 @@ static void u2_phy_host_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA1_RG_VRT_SEL;
 		tmp |= PA1_RG_VRT_SEL_VAL(instance->eye_vrt_host);
 		writel(tmp, com + U3P_USBPHYACR1);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR1);
+		tmp >>= PA1_RG_VRT_SEL_OFST;
+		tmp &= PA1_RG_VRT_SEL_MASK;
+		dev_info(dev, "current vrt:%d\n", tmp);
+#endif
 	}
 
 	if (instance->eye_term_host) {
@@ -2194,6 +2371,13 @@ static void u2_phy_host_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA1_RG_TERM_SEL;
 		tmp |= PA1_RG_TERM_SEL_VAL(instance->eye_term_host);
 		writel(tmp, com + U3P_USBPHYACR1);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR1);
+		tmp >>= PA1_RG_TERM_SEL_OFST;
+		tmp &= PA1_RG_TERM_SEL_MASK;
+		dev_info(dev, "current term:%d\n", tmp);
+#endif
 	}
 
 	if (instance->rev6_host) {
@@ -2201,6 +2385,13 @@ static void u2_phy_host_props_set(struct mtk_tphy *tphy,
 		tmp &= ~PA6_RG_U2_PHY_REV6;
 		tmp |= PA6_RG_U2_PHY_REV6_VAL(instance->rev6_host);
 		writel(tmp, com + U3P_USBPHYACR6);
+#ifdef MTK_TPHY_USB_EYE_DIAGRAM_DEBUG
+	} else {
+		tmp = readl(com + U3P_USBPHYACR6);
+		tmp >>= PA6_RG_U2_PHY_REV6_OFET;
+		tmp &= PA6_RG_U2_PHY_REV6_MASK;
+		dev_info(dev, "current rev6:%d\n", tmp);
+#endif
 	}
 }
 

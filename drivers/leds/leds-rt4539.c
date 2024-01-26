@@ -23,7 +23,11 @@
 #if IS_ENABLED(CONFIG_DRM_MEDIATEK)
 #include <linux/hrtimer.h>
 #include "mtk_disp_notify.h"
+#else
+#error "Must enable CONFIG_DRM_MEDIATEK"
 #endif
+
+//#define RT4539_DISPLAY_OFF_BACKLIGHT_DEBUG
 
 #define MAX_FB	6
 
@@ -126,6 +130,7 @@ struct rt4539_led {
 	unsigned int screen_off_backlight_off_pre_delay_ms;
 	struct delayed_work disable_delay_work;
 #if IS_ENABLED(CONFIG_DRM_MEDIATEK)
+	bool force_backlight_off_at_display_off_early;
 	bool display_off;
 	unsigned int disp_off_to_on_delay_ms;
 	unsigned int disp_off_to_on_delay_timeout_ms;
@@ -133,7 +138,6 @@ struct rt4539_led {
 	bool disp_off_to_on_delay;
 	struct hrtimer disp_off_to_on_delay_timeout;
 #endif
-
 };
 
 static const unsigned int fade_time_us[] = {
@@ -158,6 +162,12 @@ static const unsigned int slop_time_ms[] = {
 	/* B111 */ 1024,
 };
 
+static inline void rt4539_udelay(unsigned int us)
+{
+	if (us > 0)
+		usleep_range(us, us);
+}
+
 static void rt4539_mdelay(unsigned int ms)
 {
 	if (ms > 0) {
@@ -175,7 +185,7 @@ static int rt4539_disable(struct rt4539_led *priv, const char* log_prefix)
 
 	ret = gpiod_direction_output(priv->enable_gpio, 0);
 	if (ret)
-		dev_notice(priv->dev, "[%s] Failed to set enable_gpio deactive, err %d", log_prefix, ret);
+		dev_err(priv->dev, "[%s] Failed to set enable_gpio deactive, err %d", log_prefix, ret);
 	else
 		dev_alert(priv->dev, "[%s] off", log_prefix);
 
@@ -208,19 +218,43 @@ static int disp_notifier_callback(struct notifier_block *self, unsigned long eve
 		if (*ev_data == MTK_DISP_BLANK_UNBLANK) {
 			priv->display_off = false;
 			priv->disp_off_to_on_delay = true;
-	        // dev_info(priv->dev, "display is on");
+			// dev_info(priv->dev, "display is on");
 		} else if (*ev_data == MTK_DISP_BLANK_POWERDOWN) {
 			priv->display_off = true;
 			priv->disp_off_to_on_delay = false;
-	        // dev_info(priv->dev, "display is off");
-			if (delayed_work_pending(&priv->disable_delay_work))
-				cancel_delayed_work(&priv->disable_delay_work);
-			else
-				cancel_delayed_work_sync(&priv->disable_delay_work);
-			rt4539_disable(priv, "display off");
-			priv->enable = false; /* force disable */
+			// dev_info(priv->dev, "display is off");
+
+			if (priv->force_backlight_off_at_display_off_early) {
+				if (delayed_work_pending(&priv->disable_delay_work))
+					cancel_delayed_work(&priv->disable_delay_work);
+				else
+					cancel_delayed_work_sync(&priv->disable_delay_work);
+
+				priv->enable = false; /* force disable */
+				rt4539_disable(priv, "display off early");
+			} else {
+#ifdef RT4539_DISPLAY_OFF_BACKLIGHT_DEBUG
+				dev_alert(priv->dev, "display off early");
+#endif
+			}
 		}
 	} else if (event == MTK_DISP_EVENT_BLANK) {
+		if (*ev_data == MTK_DISP_BLANK_POWERDOWN) {
+			if (!priv->force_backlight_off_at_display_off_early) {
+				priv->enable = false; /* force disable */
+				rt4539_disable(priv, "display off");
+
+				if (delayed_work_pending(&priv->disable_delay_work))
+					cancel_delayed_work(&priv->disable_delay_work);
+				else
+					cancel_delayed_work_sync(&priv->disable_delay_work);
+			} else {
+#ifdef RT4539_DISPLAY_OFF_BACKLIGHT_DEBUG
+				dev_alert(priv->dev, "display off");
+#endif
+			}
+		}
+
 		if (priv->disp_off_to_on_delay_ms && priv->disp_off_to_on_delay_timeout_ms) {
 			if (*ev_data == MTK_DISP_BLANK_UNBLANK)
 				hrtimer_start(&priv->disp_off_to_on_delay_timeout,
@@ -350,8 +384,8 @@ static ssize_t registers_show(struct device *dev,
 }
 
 static ssize_t registers_store(struct device *dev,
-			     struct device_attribute *attr,
-			     const char *buf, size_t size)
+				struct device_attribute *attr,
+				const char *buf, size_t size)
 {
 	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
 	int ret;
@@ -454,8 +488,8 @@ static ssize_t registers_store(struct device *dev,
 }
 
 static ssize_t i2c_brightness_store(struct device *dev,
-			     struct device_attribute *attr,
-			     const char *buf, size_t size)
+				struct device_attribute *attr,
+				const char *buf, size_t size)
 {
 	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
 	int ret;
@@ -483,8 +517,8 @@ static ssize_t time_ctrl_for_off_show(struct device *dev,
 }
 
 static ssize_t time_ctrl_for_off_store(struct device *dev,
-			     struct device_attribute *attr,
-			     const char *buf, size_t size)
+				struct device_attribute *attr,
+				const char *buf, size_t size)
 {
 	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
 	int val = 0;
@@ -505,14 +539,92 @@ static ssize_t time_ctrl_for_off_store(struct device *dev,
 	return size;
 }
 
+static ssize_t fade_off_min_hw_brightness_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
+
+	return sprintf(buf, "%u\n", priv->fade_off_min_hw_brightness);
+}
+
+static ssize_t fade_off_min_hw_brightness_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t size)
+{
+	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
+	unsigned int val = 0;
+
+	if (kstrtouint(buf, 0, &val))
+		return -EINVAL;
+
+	priv->fade_off_min_hw_brightness = val;
+
+	return size;
+}
+
+static ssize_t screen_off_backlight_off_pre_delay_ms_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
+
+	return sprintf(buf, "%u\n", priv->screen_off_backlight_off_pre_delay_ms);
+}
+
+static ssize_t screen_off_backlight_off_pre_delay_ms_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t size)
+{
+	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
+	unsigned int val = 0;
+
+	if (kstrtouint(buf, 0, &val))
+		return -EINVAL;
+
+	if (val < 30)
+		return -ERANGE;
+
+	priv->screen_off_backlight_off_pre_delay_ms = val;
+
+	return size;
+}
+
+static ssize_t force_backlight_off_at_display_off_early_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
+
+	return sprintf(buf, "%d\n", priv->force_backlight_off_at_display_off_early);
+}
+
+static ssize_t force_backlight_off_at_display_off_early_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t size)
+{
+	struct rt4539_led *priv = i2c_get_clientdata(to_i2c_client(dev));
+	unsigned int val = 0;
+
+	if (kstrtouint(buf, 0, &val))
+		return -EINVAL;
+
+	priv->force_backlight_off_at_display_off_early = val ? true : false;
+
+	return size;
+}
+
 static DEVICE_ATTR_RW(registers);
 static DEVICE_ATTR_WO(i2c_brightness);
 static DEVICE_ATTR_RW(time_ctrl_for_off);
+static DEVICE_ATTR_RW(fade_off_min_hw_brightness);
+static DEVICE_ATTR_RW(screen_off_backlight_off_pre_delay_ms);
+static DEVICE_ATTR_RW(force_backlight_off_at_display_off_early);
 
 static struct attribute *rt4539_attributes[] = {
 	&dev_attr_registers.attr,
 	&dev_attr_i2c_brightness.attr,
 	&dev_attr_time_ctrl_for_off.attr,
+	&dev_attr_fade_off_min_hw_brightness.attr,
+	&dev_attr_screen_off_backlight_off_pre_delay_ms.attr,
+	&dev_attr_force_backlight_off_at_display_off_early.attr,
 	NULL,
 };
 
@@ -521,7 +633,7 @@ static const struct attribute_group rt4539_attr_group = {
 };
 
 static int __maybe_unused led_pwm_get_conn_id(struct mt_led_data *mdev,
-		       int flag)
+			int flag)
 {
 	mdev->conf.connector_id = mtk_drm_get_conn_obj_id_from_idx(mdev->desp.index, flag);
 	// dev_info(mdev->conf.cdev.dev, "disp_id: %d, connector id %d", mdev->desp.index, mdev->conf.connector_id);
@@ -659,7 +771,7 @@ static void rt4539_disable_delay_work(struct work_struct *work)
 }
 
 static int rt4539_brightness_set(struct mt_led_data *mdev,
-		       int brightness)
+			int brightness)
 {
 	struct rt4539_led *priv = container_of(mdev, struct rt4539_led, m_led);
 	int ret = 0;
@@ -761,7 +873,7 @@ static int rt4539_brightness_set(struct mt_led_data *mdev,
 
 				slop_time = slop_time_ms[(new_time_ctrl & RT4539_REG_06_SLOPE_TIME_MASK) >> RT4539_REG_06_SLOPE_TIME_SHIFT];
 				fade_time = fade_time_us[(new_time_ctrl & RT4539_REG_06_FADE_TIME_MASK) >> RT4539_REG_06_FADE_TIME_SHIFT];
-				fade_time = DIV_ROUND_UP(fade_time * priv->curr_hw_brightness, 1000); /* ms */
+				fade_time = (fade_time * priv->curr_hw_brightness) / 1000; /* msec (ROUND DOWN) */
 				fade_time = max_t(unsigned int, fade_time, slop_time);
 
 				disable_delay = max_t(unsigned int, disable_delay, fade_time);
@@ -811,17 +923,22 @@ static int rt4539_brightness_set(struct mt_led_data *mdev,
 
 				fade_time = fade_time_us[(new_time_ctrl & RT4539_REG_06_FADE_TIME_MASK) >> RT4539_REG_06_FADE_TIME_SHIFT];
 				fade_time *= (priv->curr_hw_brightness - priv->fade_off_min_hw_brightness);
-				fade_time = DIV_ROUND_UP(fade_time, 1000); /* ms */
 
-				fade_time = max_t(unsigned int, fade_time, slop_time);
-				// dev_info(priv->dev, "display off backlight off waiting ms: %u", fade_time);
+				fade_time = max_t(unsigned int, fade_time, (slop_time * USEC_PER_MSEC)); /* us */
+				// dev_info(priv->dev, "display off backlight off waiting us: %u", fade_time);
 
-				rt4539_mdelay(fade_time);
+#ifdef RT4539_DISPLAY_OFF_BACKLIGHT_DEBUG
+				dev_alert(priv->dev, "delay %u us", fade_time);
+#endif
+				rt4539_udelay(fade_time);
 			}
 
 			queue_delayed_work(system_highpri_wq,
 					&priv->disable_delay_work,
 					msecs_to_jiffies(priv->screen_off_backlight_off_pre_delay_ms));
+#ifdef RT4539_DISPLAY_OFF_BACKLIGHT_DEBUG
+			dev_alert(priv->dev, "queued %u ms off", priv->screen_off_backlight_off_pre_delay_ms);
+#endif
 		}
 		brightness = 0;
 	} else
@@ -834,7 +951,7 @@ static int rt4539_brightness_set(struct mt_led_data *mdev,
 
 __attribute__((nonnull))
 static int rt4539_pwm_add(struct device *dev, struct rt4539_led *priv,
-		       struct fwnode_handle *fwnode)
+			struct fwnode_handle *fwnode)
 {
 	int ret;
 
@@ -891,7 +1008,7 @@ static int rt4539_create_fwnode(struct device *dev, struct rt4539_led *priv)
 
 	if (fwnode_property_read_u32(fwnode, "screen-off-backlight-off-pre-delay",
 			&priv->screen_off_backlight_off_pre_delay_ms))
-		priv->screen_off_backlight_off_pre_delay_ms = 20;
+		priv->screen_off_backlight_off_pre_delay_ms = 30;
 	// dev_info(priv->dev, "screen-off-backlight-off-pre-delay=%u", priv->screen_off_backlight_off_pre_delay_ms);
 
 #if IS_ENABLED(CONFIG_DRM_MEDIATEK)
@@ -902,6 +1019,12 @@ static int rt4539_create_fwnode(struct device *dev, struct rt4539_led *priv)
 	if (fwnode_property_read_u32(fwnode, "disp-off-to-on-delay-timeout", &priv->disp_off_to_on_delay_timeout_ms))
 		priv->disp_off_to_on_delay_timeout_ms = 0;
 	// dev_info(priv->dev, "off-to-on-delay-timeout=%u", priv->disp_off_to_on_delay_timeout_ms);
+
+	if (fwnode_property_read_bool(fwnode, "force-backlight-off-at-display-off-early"))
+		priv->force_backlight_off_at_display_off_early = true;
+	else
+		priv->force_backlight_off_at_display_off_early = false;
+	// dev_info(priv->dev, "force-backlight-off-at-display-off-early=%d", priv->force_backlight_off_at_display_off_early);
 #endif
 
 	if (fwnode_property_read_u32_array(fwnode, "fbs", priv->fbs, MAX_FB)) {

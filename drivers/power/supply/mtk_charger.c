@@ -2287,6 +2287,20 @@ stop_charging:
 	info->can_charging = charging;
 }
 
+//Avoid kernel WARNING of "double register detected" due to charger_init_algo retry
+static void mtk_unregister_chg_alg_notifiers(struct mtk_charger *info, int idx)
+{
+	struct chg_alg_device *alg;
+	int i;
+
+	for (i = 0; i <= idx; i++) {
+		alg = info->alg[i];
+		//chr_err("%s: i=%d; alg=0x%x\n", __func__, i, alg);
+		if (alg != NULL)
+			unregister_chg_alg_notifier(alg, &info->chg_alg_nb);
+	}
+}
+
 static bool charger_init_algo(struct mtk_charger *info)
 {
 	struct chg_alg_device *alg;
@@ -2387,6 +2401,7 @@ static bool charger_init_algo(struct mtk_charger *info)
 		else {
 			chr_err("*** Error : can't find secondary charger ***\n");
 			info->config = SINGLE_CHARGER; //use single charger in case of no secondary_chg found for dual chargers config
+			mtk_unregister_chg_alg_notifiers(info, idx);
 			return false;
 		}
 	} else if (info->config == DIVIDER_CHARGER ||
@@ -2396,6 +2411,7 @@ static bool charger_init_algo(struct mtk_charger *info)
 			chr_err("Found primary divider charger\n");
 		else {
 			chr_err("*** Error : can't find primary divider charger ***\n");
+			mtk_unregister_chg_alg_notifiers(info, idx);
 			return false;
 		}
 		if (info->config == DUAL_DIVIDER_CHARGERS) {
@@ -2405,6 +2421,7 @@ static bool charger_init_algo(struct mtk_charger *info)
 				chr_err("Found secondary divider charger\n");
 			else {
 				chr_err("*** Error : can't find secondary divider charger ***\n");
+				mtk_unregister_chg_alg_notifiers(info, idx);
 				return false;
 			}
 		}

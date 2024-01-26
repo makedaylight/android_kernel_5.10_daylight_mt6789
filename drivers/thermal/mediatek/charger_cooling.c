@@ -250,7 +250,7 @@ static int charger_cooling_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	struct thermal_cooling_device *cdev;
 	struct charger_cooling_device *charger_cdev;
-	int ret;
+	int ret, len;
 
 	charger_cdev = devm_kzalloc(dev, sizeof(*charger_cdev), GFP_KERNEL);
 	if (!charger_cdev)
@@ -258,7 +258,9 @@ static int charger_cooling_probe(struct platform_device *pdev)
 
 	charger_cdev->pdata = of_device_get_match_data(dev);
 
-	strncpy(charger_cdev->name, np->name, strlen(np->name));
+	len = (strlen(np->name) > (MAX_CHARGER_COOLER_NAME_LEN - 1)) ?
+		(MAX_CHARGER_COOLER_NAME_LEN - 1) : strlen(np->name);
+	strncpy(charger_cdev->name, np->name, len);
 	charger_cdev->target_state = CHARGER_COOLING_UNLIMITED_STATE;
 	charger_cdev->dev = dev;
 	charger_cdev->max_state = CHARGER_STATE_NUM - 1;

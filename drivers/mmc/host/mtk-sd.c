@@ -4,13 +4,12 @@
  * Author: Chaotian.Jing <chaotian.jing@mediatek.com>
  */
 
-//#define ICOM_MTK_MMC_NEW_TIMEOUT
+#define ICOM_MTK_MMC_NEW_TIMEOUT
 // #define ICOM_MTK_MMC_NEW_TIMEOUT_DEBUG
 // #define ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
 // #define ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
-//#define ICOM_MTK_MMC_DVFSRC_VCORE
-/* To review ICOM_MTK_MMC_DONT_USE_NOIRQ_PM if host->req_vcore is defined */
-//#define ICOM_MTK_MMC_DONT_USE_NOIRQ_PM
+#define ICOM_MTK_MMC_DVFSRC_VCORE
+#define ICOM_MTK_MMC_CPU_LATENCY_REQUEST
 #define ICOM_MTK_MMC_NEW_BEST_DELAY
 
 #include <linux/module.h>
@@ -28,12 +27,16 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
+#include <linux/pm_qos.h>
+#include <linux/cpu.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/reset.h>
+#include <linux/ratelimit_types.h>
+#include <linux/ktime.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/core.h>
@@ -47,6 +50,7 @@
 #include "cqhci.h"
 
 #define MAX_BD_NUM          1024
+#define MSDC_NR_CLOCKS      3
 
 /*--------------------------------------------------------------------------*/
 /* Common Definition                                                        */
@@ -249,6 +253,7 @@
 #define MSDC_PATCH_BIT1_CMDTA     (0x7 << 3)    /* RW */
 #define MSDC_PB1_BUSY_CHECK_SEL   (0x1 << 7)    /* RW */
 #define MSDC_PATCH_BIT1_STOP_DLY  (0xf << 8)    /* RW */
+#define MSDC_PATCH_BIT1_SINGLE_BURST    (0x1 << 16)
 
 #define MSDC_PATCH_BIT2_CFGRESP   (0x1 << 15)   /* RW */
 #define MSDC_PATCH_BIT2_CFGCRCSTS (0x1 << 28)   /* RW */
@@ -341,6 +346,7 @@
   #define PAD_DELAY_PRIx0	"08x"
 #endif
 #define PAD_DELAY_TUNING_LOOP	(5)
+#define PAD_DELAY_RISING_MIN_LENGTH	(12)
 
 #define SDIO_CCCR_INTERRUPT_EXT	0x16
 #define SDIO_INTERRUPT_EXT_SAI	(1 << 0)
@@ -461,7 +467,8 @@ struct msdc_host {
 #endif
 
 	int signal_voltage; /* signalling voltage (1.8V or 3.3V) */
-	bool pins_poweron_enabled;
+	unsigned short ios_vdd; /* stored ios vdd value */
+	bool sd_poweroff_reset_signal_volt; /* sd-poweroff-reset-signal-volt */
 
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *pins_normal;
@@ -476,14 +483,22 @@ struct msdc_host {
 	int sdio_irq_cnt;       /* irq enable cnt */
 	struct reset_control *reset;
 
-	struct clk *p_clk;		/* msdc power clock */
-	struct clk *axi_clk;	/* msdc axi clock*/
-	struct clk *ahb_clk;	/* msdc ahb2axi_brg_clk clock*/
 	struct clk *src_clk;	/* msdc source clock */
 	struct clk *h_clk;      /* msdc h_clk */
 	struct clk *bus_clk;	/* bus clock which used to access register */
 	struct clk *src_clk_cg; /* msdc source clock control gate */
+	struct clk *sys_clk_cg;	/* msdc subsys clock control gate */
+	struct clk *crypto_clk;    /* msdc crypto clock */
+	struct clk *crypto_cg;     /* msdc crypto clock control gate */
+	struct clk_bulk_data bulk_clks[MSDC_NR_CLOCKS];
 
+	/* clk_auto_powerdown == true => Clear MSDC_CFG_CKPDN bit always:
+	 *   1'b0: Clock will be gated to 0 if no command or data is transmitted.
+	 *   1'b1: Clock will be running freely even if no command or data is
+	 *         transmitted.  (The clock may still be stopped when MSDC write data are
+	 *         not enough or there is no space for the next read data.)
+	 */
+	bool clk_auto_powerdown; /* MSDC_CFG_CKPDN */
 	u32 mclk;		/* mmc subsystem clock frequency */
 	u32 src_clk_freq;	/* source clock frequency */
 	unsigned char timing;
@@ -493,11 +508,17 @@ struct msdc_host {
 	bool vioa_enabled;
 	bool viob_enabled;
 	bool tuning_both_edges;
+	struct regulator *vcore_power;
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+	u32 *vcore_lookup_table;
+	int n_vcore_lookup_table;
+	PAD_DELAY_TYPE *rising_expected_delay_maps;
+
 	PAD_DELAY_TYPE rising_delay_map_mask;
 	PAD_DELAY_TYPE falling_delay_map_mask;
-	struct msdc_delay_phase rising_delay_mask_phase;
+	int rising_delay_min_length;
 #endif
+	int tuning_loop;
 	u32 ckgen_delay;
 	u32 latch_ck;
 	u32 hs400_ds_delay;
@@ -510,17 +531,32 @@ struct msdc_host {
 	bool cqhci;		/* support eMMC hw cmdq */
 	bool sdio_eint_ready;   /* Ready to support SDIO eint interrupt */
 	bool enable_async_irq;
+	bool ahb_bus_no_incr1; /* AHB bus no incr1 burst type */
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
 	struct msdc_tune_para saved_tune_para; /* tune result of CMD21/CMD19 */
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 	struct cqhci_host *cq_host;
+#endif
 
 	u32 autosuspend_delay;
 
 #ifdef ICOM_MTK_MMC_DVFSRC_VCORE
 	struct regulator *dvfsrc_vcore_power;
-	u32 req_vcore;
+	int req_vcore;
 #endif
+	u32 affinity_hint_cpu;
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+	bool use_affinity_hint_cpu_latency;
+	struct device *cpu_dev;
+	struct pm_qos_request pm_qos_req;
+	int cpu_latency_req;
+#endif
+
+	struct ratelimit_state cmd_err_ratelimit;
+	struct ratelimit_state cmd_err_crc_ratelimit;
+	struct ratelimit_state data_err_ratelimit;
+	struct ratelimit_state data_err_crc_ratelimit;
 };
 
 static const struct mtk_mmc_compatible mt8135_compat = {
@@ -694,6 +730,63 @@ static const struct of_device_id msdc_of_ids[] = {
 	{}
 };
 MODULE_DEVICE_TABLE(of, msdc_of_ids);
+
+/* true: allowed */
+static bool msdc_ratelimit(struct ratelimit_state *rs)
+{
+	/* Paired with WRITE_ONCE() in .proc_handler().
+	 * Changing two values seperately could be inconsistent
+	 * and some message could be lost.  (See: net_ratelimit_state).
+	 */
+	int interval = READ_ONCE(rs->interval);
+	int burst = READ_ONCE(rs->burst);
+#if 0
+	unsigned long flags;
+#endif
+	bool ret;
+
+	if (!interval)
+		return true;
+
+#if 0
+	/*
+	 * If we contend on this state's lock then almost
+	 * by definition we are too busy to print a message,
+	 * in addition to the one that will be printed by
+	 * the entity that is holding the lock already:
+	 */
+	if (!raw_spin_trylock_irqsave(&rs->lock, flags))
+		return false;
+#endif
+
+	if (!rs->begin)
+		rs->begin = jiffies;
+
+	if (time_is_before_jiffies(rs->begin + interval)) {
+#if 0
+		if (rs->missed) {
+			if (!(rs->flags & RATELIMIT_MSG_ON_RELEASE))
+				rs->missed = 0;
+		}
+#else
+		rs->missed  = 0;
+#endif
+		rs->begin   = jiffies;
+		rs->printed = 0;
+	}
+	if (burst && burst > rs->printed) {
+		rs->printed++;
+		ret = true;
+	} else {
+		rs->missed++;
+		ret = false;
+	}
+#if 0
+	raw_spin_unlock_irqrestore(&rs->lock, flags);
+#endif
+
+	return ret;
+}
 
 static void sdr_set_bits(void __iomem *reg, u32 bs)
 {
@@ -899,6 +992,7 @@ static void msdc_set_timeout(struct msdc_host *host, u64 ns, u64 clks)
 		      (u32)(timeout > 255 ? 255 : timeout));
 }
 
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 static void msdc_set_busy_timeout(struct msdc_host *host, u64 ns, u64 clks)
 {
 	u64 timeout;
@@ -907,6 +1001,7 @@ static void msdc_set_busy_timeout(struct msdc_host *host, u64 ns, u64 clks)
 	sdr_set_field(host->base + SDC_CFG, SDC_CFG_WRDTOC,
 		      (u32)(timeout > 8191 ? 8191 : timeout));
 }
+#endif
 
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
 static u32 msdc_max_busy_timeout_us(struct msdc_host *host)
@@ -945,6 +1040,7 @@ static void msdc_set_data_timeout(struct msdc_host *host, u64 timeout_ns)
 	struct mmc_host *mmc = mmc_from_priv(host);
 	u64 count;
 
+	host->data_timeout_ns = timeout_ns;
 	host->timeout_ns = timeout_ns;
 	host->timeout_clks = 0;
 
@@ -974,7 +1070,7 @@ static void msdc_set_data_timeout(struct msdc_host *host, u64 timeout_ns)
 	}
 
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_DEBUG
-	dev_info(host->dev, "set data timeout: %llu us (%u)\n", timeout_ns / 1000, (u32)count);
+	dev_info(host->dev, "set data timeout: %llu us (%u)\n", timeout_ns / NSEC_PER_USEC, (u32)count);
 #endif
 
 	/* read data timeout */
@@ -988,41 +1084,31 @@ static void msdc_set_data_timeout(struct msdc_host *host, u64 timeout_ns)
 
 static void msdc_gate_clock(struct msdc_host *host)
 {
-	if (host->src_clk_cg)
-		clk_disable_unprepare(host->src_clk_cg);
-	if (host->src_clk)
-		clk_disable_unprepare(host->src_clk);
-	if (host->bus_clk)
-		clk_disable_unprepare(host->bus_clk);
-	if (host->h_clk)
-		clk_disable_unprepare(host->h_clk);
-	if (host->axi_clk)
-		clk_disable_unprepare(host->axi_clk);
-	if (host->ahb_clk)
-		clk_disable_unprepare(host->ahb_clk);
-	if (host->p_clk)
-		clk_disable_unprepare(host->p_clk);
-
+	clk_bulk_disable_unprepare(MSDC_NR_CLOCKS, host->bulk_clks);
+	clk_disable_unprepare(host->src_clk_cg);
+	clk_disable_unprepare(host->crypto_cg);
+	clk_disable_unprepare(host->src_clk);
+	clk_disable_unprepare(host->bus_clk);
+	clk_disable_unprepare(host->h_clk);
+	clk_disable_unprepare(host->crypto_clk);
 }
 
 static int msdc_ungate_clock(struct msdc_host *host)
 {
 	u32 val;
+	int ret;
 
-	if (host->p_clk)
-		clk_prepare_enable(host->p_clk);	//MSDC_PCLK_CK_MSDC1_CKEN
-	if (host->axi_clk)
-		clk_prepare_enable(host->axi_clk); //MSDC_AXI_CK_CKEN
-	if (host->ahb_clk)
-		clk_prepare_enable(host->ahb_clk); //MSDC_AHB2AXI_BRG_AXI_CKEN
-	if (host->bus_clk)
-		clk_prepare_enable(host->bus_clk);
-	if (host->h_clk)
-		clk_prepare_enable(host->h_clk);	//MSDC_HCLK_MST_CK_0P_CKEN
-	if (host->src_clk)
-		clk_prepare_enable(host->src_clk);
-	if (host->src_clk_cg)
-		clk_prepare_enable(host->src_clk_cg);	//MSDC_SRC_CK_0P_CKEN
+	clk_prepare_enable(host->crypto_clk);
+	clk_prepare_enable(host->h_clk);
+	clk_prepare_enable(host->bus_clk);
+	clk_prepare_enable(host->src_clk);
+	clk_prepare_enable(host->crypto_cg);
+	clk_prepare_enable(host->src_clk_cg);
+	ret = clk_bulk_prepare_enable(MSDC_NR_CLOCKS, host->bulk_clks);
+	if (ret) {
+		dev_err(host->dev, "Cannot enable pclk/axi/ahb clock gates\n");
+		return ret;
+	}
 
 	return readl_poll_timeout(host->base + MSDC_CFG, val,
 				  (val & MSDC_CFG_CKSTB), 1, 20000);
@@ -1109,7 +1195,21 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 
 	clk_prepare_enable(host->src_clk_cg);
 	readl_poll_timeout(host->base + MSDC_CFG, val, (val & MSDC_CFG_CKSTB), 0, 0);
-	sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
+	if (host->clk_auto_powerdown) {
+		if (host->mclk == 0 && (mmc->caps2 & MMC_CAP2_NO_MMC)
+			&& mmc->ios.signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
+			/* Refer to mmc_host_set_uhs_voltage() for SD/SDIO */
+			dev_alert(host->dev, "[%s]: enable clk free run 1ms+ for 1.8v switch\n",
+				__func__);
+			/* Clock will be running freely even if no command or data is transmitted */
+			sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
+			usleep_range(1000, 1500);
+			/* Clock will be gated to 0 if no command or data is transmitted. */
+			sdr_clr_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
+		}
+	} else
+		/* Clock will be running freely even if no command or data is transmitted */
+		sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
 	mmc->actual_clock = sclk;
 	host->mclk = hz;
 	host->timing = timing;
@@ -1426,7 +1526,23 @@ static bool msdc_cmd_done(struct msdc_host *host, int events,
 					&& cmd->opcode != MMC_SEND_TUNING_BLOCK
 					&& cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200
 					&& cmd->opcode != MMC_SEND_STATUS) {
-				dev_alert(host->dev, "need retune since cmd%d crc error\n", cmd->opcode);
+				if (mmc->caps & MMC_CAP_NONREMOVABLE) {
+					dev_alert(host->dev, "need both-edge retune since cmd%d crc error\n", cmd->opcode);
+					/**
+					 * The current tuned phase delay might be not good enough,
+					 * Let the system tune the both edges and get the new best delay from rising or falling.
+					 */
+					host->tuning_both_edges = true;
+				} else
+					dev_alert(host->dev, "need retune since cmd%d crc error\n", cmd->opcode);
+
+				/* call mmc_retune_needed() here to "reduce" the phase tuning error.
+				 *
+				 * [  140.760392] mtk-sd 11240000.mmc: [name:mtk_sd&]Rising phase error map: 0x0
+				 * [  140.761372] mtk-sd 11240000.mmc: [name:mtk_sd&]Falling phase error map: 0x0
+				 * [  140.761382] mtk-sd 11240000.mmc: [name:mtk_sd&]Final pad rising delay: 0xff [map:0]
+				 * [  140.761385] mtk-sd 11240000.mmc: [name:mtk_sd&]Tune cmd/data fail!
+				 */
 				mmc_retune_needed(mmc);
 			}
 		} else if (events & MSDC_INT_CMDTMO) {
@@ -1436,18 +1552,22 @@ static bool msdc_cmd_done(struct msdc_host *host, int events,
 	}
 	if (cmd->error &&
 		cmd->opcode != MMC_SEND_TUNING_BLOCK &&
-		cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200)
+		cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200) {
+		if ((cmd->error == -EILSEQ && msdc_ratelimit(&host->cmd_err_crc_ratelimit)) ||
+			(cmd->error != -EILSEQ && msdc_ratelimit(&host->cmd_err_ratelimit))) {
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
-		dev_dbg(host->dev,
-				"%s: cmd=%d arg=%08X; rsp %08X; cmd_error=%d; events=%08x; dto_ns=%llu\n",
-				__func__, cmd->opcode, cmd->arg, rsp[0],
-				cmd->error, events, host->data_timeout_ns);
+			dev_err(host->dev,
+				"%s: cmd=%d arg=0x%x flag=0x%x; rsp=0x%x; cmd_error=%d; events=0x%x; dto_ms=%llu\n",
+				__func__, cmd->opcode, cmd->arg, cmd->flags, rsp[0],
+				cmd->error, events, host->data_timeout_ns / NSEC_PER_MSEC);
 #else
-		dev_dbg(host->dev,
-				"%s: cmd=%d arg=%08X; rsp %08X; cmd_error=%d; events=%08x\n",
-				__func__, cmd->opcode, cmd->arg, rsp[0],
+			dev_err(host->dev,
+				"%s: cmd=%d arg=0x%x flag=0x%x; rsp=0x%x; cmd_error=%d; events=0x%x\n",
+				__func__, cmd->opcode, cmd->arg, cmd->flags, rsp[0],
 				cmd->error, events);
 #endif
+		}
+	}
 
 	msdc_cmd_next(host, mrq, cmd);
 	return true;
@@ -1493,23 +1613,23 @@ static u64 msdc_target_timeout(struct msdc_host *host,
 		 struct mmc_command *cmd, struct mmc_data *data)
 {
 	//struct mmc_host *mmc = mmc_from_priv(host);
-	u64 target_timeout;
+	u64 target_timeout; /* us */
 
 	/* timeout in us */
 	if (!data) {
 		if (!cmd)
 			target_timeout = host->max_busy_timeout_us;
 		else if (cmd->busy_timeout)
-			target_timeout = 1000ULL * cmd->busy_timeout;
+			target_timeout = 1000ULL * cmd->busy_timeout; /* ms -> us */
 		else if (cmd->flags & MMC_RSP_BUSY)
 			target_timeout = host->max_busy_timeout_us;
 		else
-			target_timeout = 500000ULL; /* 500ms */
+			target_timeout = 500000ULL; /* 500ms -> us */
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
 		dev_info(host->dev, "target cmd timeout: %llu us\n", target_timeout);
 #endif
 	} else {
-		target_timeout = DIV_ROUND_UP(data->timeout_ns, 1000);
+		target_timeout = DIV_ROUND_UP(data->timeout_ns, 1000); /* ns -> us */
 		/* Refer to mmc_set_data_timeout() */
 		if (host->mclk && data->timeout_clks) {
 			u64 val;
@@ -1524,7 +1644,7 @@ static u64 msdc_target_timeout(struct msdc_host *host,
 			target_timeout += val;
 		}
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
-		dev_info(host->dev, "target data timeout: %llu us (#=%u)\n", target_timeout, data->blocks);
+		dev_info(host->dev, "target data timeout: %llu us (nr=%u)\n", target_timeout, data->blocks);
 #endif
 	}
 
@@ -1532,11 +1652,12 @@ static u64 msdc_target_timeout(struct msdc_host *host,
 }
 
 /* Refer to sdhci_calc_timeout() & sdhci_calc_sw_timeout() */
-static void msdc_calc_timeout(struct msdc_host *host,
+static u64 msdc_calc_timeout(struct msdc_host *host,
 		struct mmc_command *cmd)
 {
 	struct mmc_data *data = cmd->data;
 	u64 target_timeout;
+	u64 data_timeout_ns;
 
 	target_timeout = msdc_target_timeout(host, cmd, data); /* us */
 	target_timeout *= NSEC_PER_USEC; /* ns */
@@ -1555,33 +1676,38 @@ static void msdc_calc_timeout(struct msdc_host *host,
 		transfer_time = transfer_time * 2;
 
 		/* calculate timeout for the entire data */
-		host->data_timeout_ns = target_timeout * data->blocks +
+		data_timeout_ns = target_timeout * data->blocks +
 				     transfer_time;
 
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
-		dev_info(host->dev, "calc data timeout: %u us (nr=%u) (transfer: %u ns)\n",
-				host->data_timeout_ns / 1000, data->blocks, transfer_time);
+		dev_info(host->dev, "calc data timeout: %u us (nr=%u) transfer: %u ns (blksz=%u)\n",
+				data_timeout_ns / NSEC_PER_USEC, data->blocks, transfer_time, blksz);
 #endif
 #else
 		/* add more time below to skip transfer_time calculation */
 		/* calculate timeout for the entire data */
-		host->data_timeout_ns = target_timeout * data->blocks;
+		data_timeout_ns = target_timeout * data->blocks + (20 * NSEC_PER_MSEC)/*20ms*/;
 
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
-		dev_info(host->dev, "data timeout: %u us (#=%u)\n",
-				host->data_timeout_ns / 1000, data->blocks);
+		dev_info(host->dev, "calc data timeout: %u us (nr=%u)\n",
+				data_timeout_ns / NSEC_PER_USEC, data->blocks);
 #endif
 #endif
 	} else {
-		host->data_timeout_ns = target_timeout;
+		data_timeout_ns = target_timeout;
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
 		dev_info(host->dev, "calc cmd data timeout: %u us\n",
-				host->data_timeout_ns / 1000);
+				data_timeout_ns / NSEC_PER_USEC);
 #endif
 	}
 
-	if (host->data_timeout_ns)
-		host->data_timeout_ns += (500 * NSEC_PER_MSEC); /* more time */
+	if (data_timeout_ns) {
+		data_timeout_ns += (100ULL * NSEC_PER_MSEC); /* more time: >=MMC_CMD_TRANSFER_TIME */
+		if (data_timeout_ns < (500ULL * NSEC_PER_MSEC))
+			data_timeout_ns = 500ULL * NSEC_PER_MSEC;
+	}
+
+	return data_timeout_ns;
 }
 #endif
 
@@ -1613,10 +1739,9 @@ static void msdc_start_command(struct msdc_host *host,
 
 	spin_lock_irqsave(&host->lock, flags);
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
-	data_timeout_ns = host->data_timeout_ns;
-	msdc_calc_timeout(host, cmd);
+	data_timeout_ns = msdc_calc_timeout(host, cmd);
 	if (data_timeout_ns != host->data_timeout_ns)
-		msdc_set_data_timeout(host, host->data_timeout_ns);
+		msdc_set_data_timeout(host, data_timeout_ns);
 
 	if (host->data_timeout_ns)
 		sw_timeout_jiffies = nsecs_to_jiffies(host->data_timeout_ns) + HZ;
@@ -1765,30 +1890,59 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 
 			if (events & MSDC_INT_DATTMO)
 				data->error = -ETIMEDOUT;
-			else if (events & MSDC_INT_DATCRCERR)
+			else if (events & MSDC_INT_DATCRCERR) {
+				struct mmc_host *mmc = mmc_from_priv(host);
+
 				data->error = -EILSEQ;
-			if (mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK &&
-			    mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200) {
-				if (mrq && mrq->cmd)
+
+				if (!(mmc->retune_crc_disable) && mrq && mrq->cmd
+						&& mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK
+						&& mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200
+						&& mrq->cmd->opcode != MMC_SEND_STATUS) {
+					if (mmc->caps & MMC_CAP_NONREMOVABLE) {
+						dev_alert(host->dev, "need both-edge retune since cmd%d data crc error\n",
+								mrq->cmd->opcode);
+						/**
+						 * The current tuned phase delay might be not good enough,
+						 * Let the system tune the both edges and get the new best delay from rising or falling.
+						 */
+						host->tuning_both_edges = true;
+					} else
+						dev_alert(host->dev, "need retune since cmd%d data crc error\n",
+								mrq->cmd->opcode);
+
+					mmc_retune_needed(mmc);
+				}
+			}
+
+			if (mrq && mrq->cmd &&
+					mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK &&
+					mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200) {
+				if ((data->error == -EILSEQ && msdc_ratelimit(&host->data_err_crc_ratelimit)) ||
+						(data->error != -EILSEQ && msdc_ratelimit(&host->data_err_ratelimit))) {
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
-					dev_dbg(host->dev, "%s: cmd=%d flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_us=%llu",
-							__func__, mrq->cmd->opcode, data->flags, data->blocks,
-							data->error, data->bytes_xfered, host->data_timeout_ns / 1000);
+					dev_err(host->dev, "%s: cmd=%d data_flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_ms=%llu",
+						__func__, mrq->cmd->opcode, data->flags, data->blocks,
+						data->error, data->bytes_xfered, host->data_timeout_ns / NSEC_PER_MSEC);
 #else
-					dev_dbg(host->dev, "%s: cmd=%d flags=0x%x blocks=%u data_error=%d xfer_size=%d",
-							__func__, mrq->cmd->opcode, data->flags, data->blocks,
-							data->error, data->bytes_xfered);
+					dev_err(host->dev, "%s: cmd=%d data_flags=0x%x blocks=%u data_error=%d xfer_size=%d",
+						__func__, mrq->cmd->opcode, data->flags, data->blocks,
+						data->error, data->bytes_xfered);
 #endif
-				else
+				}
+			} else {
+				if ((data->error == -EILSEQ && msdc_ratelimit(&host->data_err_crc_ratelimit)) ||
+						(data->error != -EILSEQ && msdc_ratelimit(&host->data_err_ratelimit))) {
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
-					dev_dbg(host->dev, "%s: flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_us=%llu",
-							__func__, data->flags, data->blocks,
-							data->error, data->bytes_xfered, host->data_timeout_ns / 1000);
+					dev_err(host->dev, "%s: data_flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_ms=%llu",
+						__func__, data->flags, data->blocks,
+						data->error, data->bytes_xfered, host->data_timeout_ns / NSEC_PER_MSEC);
 #else
-					dev_dbg(host->dev, "%s: flags=0x%x blocks=%u data_error=%d xfer_size=%d",
-							__func__, data->flags, data->blocks,
-							data->error, data->bytes_xfered);
+					dev_err(host->dev, "%s: data_flags=0x%x blocks=%u data_error=%d xfer_size=%d",
+						__func__, data->flags, data->blocks,
+						data->error, data->bytes_xfered);
 #endif
+				}
 			}
 		}
 
@@ -1843,10 +1997,10 @@ static int msdc_ops_switch_volt(struct mmc_host *mmc, struct mmc_ios *ios)
 				host->signal_voltage = ios->signal_voltage;
 				/* Apply different pinctrl settings for different signal voltage */
 				if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
-					dev_dbg(host->dev, "%s: MMC_SIGNAL_VOLTAGE_180 & pins-uhs\n", __func__);
+					dev_dbg(host->dev, "%s: switch-volt: MMC_SIGNAL_VOLTAGE_180 & pins-uhs\n", mmc_hostname(mmc));
 					pinctrl_select_state(host->pinctrl, host->pins_uhs);
 				} else if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_330) {
-					dev_dbg(host->dev, "%s: MMC_SIGNAL_VOLTAGE_330 & pins-normal\n", __func__);
+					dev_dbg(host->dev, "%s: switch-volt: MMC_SIGNAL_VOLTAGE_330 & pins-normal\n", mmc_hostname(mmc));
 					pinctrl_select_state(host->pinctrl, host->pins_normal);
 				}
 			}
@@ -1977,7 +2131,7 @@ static void msdc_enable_sdio_irq(struct mmc_host *mmc, int enb)
 					host->sdio_eint_ready = false;
 					goto out;
 				}
-				dev_info(host->dev, "%s: SDIO CCCR Async-IRQ enabled\n",
+				dev_alert(host->dev, "%s: SDIO CCCR Async-IRQ enabled\n",
 						mmc_hostname(mmc));
 			}
 		}
@@ -1992,6 +2146,7 @@ out:
 	}
 }
 
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 static irqreturn_t msdc_cmdq_irq(struct msdc_host *host, u32 intsts)
 {
 	struct mmc_host *mmc = mmc_from_priv(host);
@@ -2020,6 +2175,7 @@ static irqreturn_t msdc_cmdq_irq(struct msdc_host *host, u32 intsts)
 
 	return cqhci_irq(mmc, 0, cmd_err, dat_err);
 }
+#endif
 
 static irqreturn_t msdc_irq(int irq, void *dev_id)
 {
@@ -2059,7 +2215,9 @@ static irqreturn_t msdc_irq(int irq, void *dev_id)
 
 		if ((mmc->caps2 & MMC_CAP2_CQE) &&
 		    (events & MSDC_INT_CMDQ)) {
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 			msdc_cmdq_irq(host, events);
+#endif
 			/* clear interrupts */
 			writel(events, host->base + MSDC_INT);
 			return IRQ_HANDLED;
@@ -2101,9 +2259,21 @@ static void msdc_init_hw(struct msdc_host *host)
 	 * respectively because some wifi devices need no clock
 	 * output in init stage.
 	 */
-	if (mmc->caps2 & MMC_CAP2_NO_SDIO)
+	if (host->clk_auto_powerdown) {
+		/* Clear MSDC_CFG_CKPDN bit always.
+		 *   1'b0: Clock will be gated to 0 if no command or data is transmitted.
+		 *   1'b1: Clock will be running freely even if no command or data is
+		 *         transmitted.  (The clock may still be stopped when MSDC write data are
+		 *         not enough or there is no space for the next read data.)
+		 */
+		sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_MODE);
+		/* MTK default RESET value: Clock will be gated to 0 if no command or data is transmitted. */
+		sdr_clr_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
+	} else if (mmc->caps2 & MMC_CAP2_NO_SDIO) /* not SDIO */
+		/* Clock will be running freely even if no command or data is transmitted */
 		sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_MODE | MSDC_CFG_CKPDN);
-	else
+	else /* SDIO */
+		/* Clock will be gated to 0 if no command or data is transmitted. */
 		sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_MODE);
 
 	/* Reset */
@@ -2144,6 +2314,28 @@ static void msdc_init_hw(struct msdc_host *host)
 	dev_dbg(host->dev, "msdc_init_hw: ckgen-delay=%u\n", host->ckgen_delay);
 #endif
 	writel(0xffff4089, host->base + MSDC_PATCH_BIT1);
+	/* AHB bus or AXI bus */
+	if (host->ahb_bus_no_incr1) {
+		/* MSDC_PATCH_BIT1=0xffff4089 */
+		/**
+		 * AHB bus will not support incr1 burst type: Set ENABLE_SINGLE_BURST bit.
+		 *     1'b1: HW will send single burst type instead of incr1 type.
+		 */
+		sdr_set_bits(host->base + MSDC_PATCH_BIT1,
+				MSDC_PATCH_BIT1_SINGLE_BURST);
+		dev_dbg(host->dev, "%s: set ENABLE_SINGLE_BURST (MSDC_PATCH_BIT1=0x%08x)",
+				__func__, readl(host->base + MSDC_PATCH_BIT1));
+	} else {
+		/* MSDC_PATCH_BIT1=0xfffe4089 */
+		/**
+		 * AXI bus: Clear ENABLE_SINGLE_BURST bit:
+		 *     1'b0: HW will send incr1 burst type.
+		 */
+		sdr_clr_bits(host->base + MSDC_PATCH_BIT1,
+				MSDC_PATCH_BIT1_SINGLE_BURST);
+		dev_dbg(host->dev, "%s: clear ENABLE_SINGLE_BURST (MSDC_PATCH_BIT1=0x%08x)",
+				__func__, readl(host->base + MSDC_PATCH_BIT1));
+	}
 	sdr_set_bits(host->base + EMMC50_CFG0, EMMC50_CFG_CFCSTS_SEL);
 
 	if (host->dev_comp->stop_clk_fix) {
@@ -2220,11 +2412,11 @@ static void msdc_init_hw(struct msdc_host *host)
 				     MSDC_PAD_TUNE_RXDLYSEL);
 	}
 
-	if (mmc->caps2 & MMC_CAP2_NO_SDIO) {
+	if (mmc->caps2 & MMC_CAP2_NO_SDIO) { /* not SDIO */
 		sdr_clr_bits(host->base + SDC_CFG, SDC_CFG_SDIO);
 		sdr_clr_bits(host->base + MSDC_INTEN, MSDC_INTEN_SDIOIRQ);
 		sdr_clr_bits(host->base + SDC_ADV_CFG0, SDC_DAT1_IRQ_TRIGGER);
-	} else {
+	} else { /* SDIO */
 		/* Configure to enable SDIO mode, otherwise SDIO CMD5 fails */
 		sdr_set_bits(host->base + SDC_CFG, SDC_CFG_SDIO);
 
@@ -2304,6 +2496,43 @@ static void msdc_init_gpd_bd(struct msdc_host *host, struct msdc_dma *dma)
 	}
 }
 
+/* Support to rollback to the default signal voltage. Refer to mmc_set_signal_voltage() */
+static int msdc_set_signal_voltage(struct mmc_host *mmc, int signal_voltage)
+{
+	int err = 0;
+	int old_signal_voltage = mmc->ios.signal_voltage;
+
+	mmc->ios.signal_voltage = signal_voltage;
+	if (mmc->ops->start_signal_voltage_switch)
+		err = mmc->ops->start_signal_voltage_switch(mmc, &mmc->ios);
+
+	if (err)
+		mmc->ios.signal_voltage = old_signal_voltage;
+
+	return err;
+}
+
+/* Support to rollback to the default signal voltage. Refer to mmc_set_initial_signal_voltage() */
+static void msdc_set_initial_signal_voltage(struct msdc_host *host)
+{
+	struct mmc_host *mmc = mmc_from_priv(host);
+	unsigned short old_ios_vdd;
+
+	/* mmc_regulator_set_vqmmc() will check "mmc->ios.vdd" */
+	old_ios_vdd = mmc->ios.vdd;
+	mmc->ios.vdd = host->ios_vdd;
+
+	/* Try to set signal voltage to 3.3V but fall back to 1.8v or 1.2v */
+	if (!msdc_set_signal_voltage(mmc, MMC_SIGNAL_VOLTAGE_330))
+		dev_dbg(mmc_dev(mmc), "set initial signal voltage of 3.3v\n");
+	else if (!msdc_set_signal_voltage(mmc, MMC_SIGNAL_VOLTAGE_180))
+		dev_dbg(mmc_dev(mmc), "set initial signal voltage of 1.8v\n");
+	else if (!msdc_set_signal_voltage(mmc, MMC_SIGNAL_VOLTAGE_120))
+		dev_dbg(mmc_dev(mmc), "set initial signal voltage of 1.2v\n");
+
+	mmc->ios.vdd = old_ios_vdd;
+}
+
 static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct msdc_host *host = mmc_priv(mmc);
@@ -2323,6 +2552,9 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 				dev_err(host->dev, "Failed to set vmmc power!\n");
 				return;
 			}
+
+			/* In order to rollback to the default signal voltage */
+			host->ios_vdd = ios->vdd; /* store ios->vdd value */
 		}
 		if (host->vioa && !host->vioa_enabled) {
 			ret = regulator_enable(host->vioa);
@@ -2347,9 +2579,8 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			else
 				host->vqmmc_enabled = true;
 		}
-		if (host->pins_poweron && !host->pins_poweron_enabled) {
-			host->pins_poweron_enabled = true;
-			dev_dbg(host->dev, "%s: pins-power-on\n", __func__);
+		if (host->pins_poweron) {
+			dev_dbg(host->dev, "%s: POWER_ON: pins-power-on\n", mmc_hostname(mmc));
 			pinctrl_select_state(host->pinctrl, host->pins_poweron);
 		}
 		if (host->signal_voltage != ios->signal_voltage) {
@@ -2357,25 +2588,27 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 			/* Apply different pinctrl settings for different signal voltage */
 			if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
-				dev_dbg(host->dev, "%s: MMC_SIGNAL_VOLTAGE_180 & pins-uhs\n", __func__);
+				dev_dbg(host->dev, "%s: POWER_ON: MMC_SIGNAL_VOLTAGE_180 & pins-uhs\n", mmc_hostname(mmc));
 				pinctrl_select_state(host->pinctrl, host->pins_uhs);
 			} else if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_330) {
-				dev_dbg(host->dev, "%s: MMC_SIGNAL_VOLTAGE_330 & pins-normal\n", __func__);
+				dev_dbg(host->dev, "%s: POWER_ON: MMC_SIGNAL_VOLTAGE_330 & pins-normal\n", mmc_hostname(mmc));
 				pinctrl_select_state(host->pinctrl, host->pins_normal);
 			} else
 				dev_err(host->dev, "%s: unsupported signal voltage!\n", __func__);
 		}
 		break;
 	case MMC_POWER_OFF:
-		if (host->pins_poweron_enabled)
-			host->pins_poweron_enabled = false;
 		if (host->pins_poweroff) {
-			dev_dbg(host->dev, "%s: pins-power-off\n", __func__);
+			dev_dbg(host->dev, "%s: POWER_OFF: pins-power-off\n", mmc_hostname(mmc));
 			pinctrl_select_state(host->pinctrl, host->pins_poweroff);
 		}
 		if (!IS_ERR(mmc->supply.vqmmc) && host->vqmmc_enabled) {
 			regulator_disable(mmc->supply.vqmmc);
 			host->vqmmc_enabled = false;
+
+			/* rollback to the default signal voltage */
+			if (host->sd_poweroff_reset_signal_volt && !(mmc->caps2 & MMC_CAP2_NO_SD)) /* SD Card */
+				msdc_set_initial_signal_voltage(host);
 		}
 		if (host->vioa && host->vioa_enabled) {
 			regulator_disable(host->vioa);
@@ -2424,8 +2657,8 @@ static struct msdc_delay_phase get_best_delay(struct msdc_host *host, u64 delay,
 	struct msdc_delay_phase delay_phase = { 0, };
 
 	if (delay == 0) {
-		dev_err(host->dev, "%s phase error: [map:%" PAD_DELAY_PRIx "]\n",
-				log_prefix ? log_prefix : "", delay);
+		dev_err(host->dev, "%s phase error map: 0x0\n",
+				log_prefix ? log_prefix : "");
 		delay_phase.final_phase = final_phase;
 		return delay_phase;
 	}
@@ -2540,8 +2773,8 @@ static struct msdc_delay_phase get_best_delay(struct msdc_host *host, u32 delay,
 	struct msdc_delay_phase delay_phase = { 0, };
 
 	if (delay == 0) {
-		dev_err(host->dev, "%s phase error: [map:%" PAD_DELAY_PRIx "]\n",
-				log_prefix ? log_prefix : "", delay);
+		dev_err(host->dev, "%s phase error map: 0x0\n",
+				log_prefix ? log_prefix : "");
 		delay_phase.final_phase = final_phase;
 		return delay_phase;
 	}
@@ -2599,6 +2832,35 @@ static inline void msdc_set_data_delay(struct msdc_host *host, u32 value)
 }
 #endif /* PAD_DELAY_USE_64BITS */
 
+#ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+/**
+ * If the rising delay map is not good as expected,
+ * force to do the falling edge delay tuning for the best delay comparison.
+ * The system will tune the both edges and get the best delay from rising or falling.
+ */
+static bool msdc_check_tune_both_edges(struct msdc_host *host, PAD_DELAY_TYPE rise_delay, int vcore)
+{
+	if (vcore > 0 && host->n_vcore_lookup_table > 0) {
+		int i;
+		for (i = 0; i < host->n_vcore_lookup_table; i++) {
+			if (vcore == host->vcore_lookup_table[i]) {
+				if ((rise_delay & host->rising_expected_delay_maps[i])
+						== host->rising_expected_delay_maps[i])
+					return false;
+				else {
+					dev_alert(host->dev,
+						"[expected:0x%" PAD_DELAY_PRIx0 "] [rising:0x%" PAD_DELAY_PRIx0 "] @vcore:%d\n",
+						host->rising_expected_delay_maps[i], rise_delay, vcore);
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+#endif
+
 static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 {
 	struct msdc_host *host = mmc_priv(mmc);
@@ -2621,17 +2883,23 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 	sdr_clr_bits(host->base + MSDC_IOCON, MSDC_IOCON_RSPL);
 	for (i = 0 ; i < PAD_DELAY_BIT_MAX; i++) {
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
-		if (!(host->rising_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
+		/**
+		 * If tuning_both_edges is false, we would like to know whether
+		 * the rising delay map is good as expected or not.
+		 *
+		 * So we must check all delays here.
+		 */
+		if (host->tuning_both_edges && !(host->rising_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
 			continue;
 #endif
 		msdc_set_cmd_delay(host, i);
 		/*
 		 * Using the same parameters, it may sometimes pass the test,
 		 * but sometimes it may fail. To make sure the parameters are
-		 * more stable, we test each set of parameters PAD_DELAY_TUNING_LOOP times.
+		 * more stable, we test each set of parameters host->tuning_loop times.
 		 */
 		cmd_err = 0;
-		for (j = 0; j < PAD_DELAY_TUNING_LOOP; j++) {
+		for (j = 0; j < host->tuning_loop; j++) {
 			mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (!cmd_err) {
 				rise_delay |= (PAD_DELAY_BIT_TYPE << i);
@@ -2642,13 +2910,34 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 		}
 	}
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+	if (!host->tuning_both_edges) {
+		int vcore = host->vcore_power ? regulator_get_voltage(host->vcore_power) : -1;
+
+		/**
+		 * If the rising delay map is not good as expected,
+		 * force to do the falling edge delay tuning for the best delay comparison.
+		 * The system will tune the both edges and get the best delay from rising or falling.
+		 */
+		if (msdc_check_tune_both_edges(host, rise_delay, vcore))
+			/* The system will tune the both edges and get the best delay from rising or falling. */
+			host->tuning_both_edges = true;
+
+		if (rise_delay && (rise_delay & host->rising_delay_map_mask) != rise_delay)
+			dev_alert(host->dev, "[rising:0x%" PAD_DELAY_PRIx0 "->0x%" PAD_DELAY_PRIx "] @vcore:%d\n",
+				rise_delay, (rise_delay & host->rising_delay_map_mask), vcore);
+#if 0
+		else
+			dev_alert(host->dev, "[rising:0x%" PAD_DELAY_PRIx "] @vcore:%d\n", rise_delay, vcore);
+#endif
+	}
+
 	rise_delay &= host->rising_delay_map_mask;
 #endif
 	final_rise_delay = get_best_delay(host, rise_delay, "Rising");
 	/* if rising edge has enough margin, then do not scan falling edge */
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
 	if (!host->tuning_both_edges &&
-		(final_rise_delay.maxlen >= host->rising_delay_mask_phase.maxlen))
+		((int)final_rise_delay.maxlen >= host->rising_delay_min_length))
 		goto skip_fall;
 #else
 	if (!host->tuning_both_edges && (final_rise_delay.maxlen >= 12 ||
@@ -2659,6 +2948,7 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 	sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_RSPL);
 	for (i = 0; i < PAD_DELAY_BIT_MAX; i++) {
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+		/* Here is the falling edge tuning so only tune for falling_delay_map_mask. */
 		if (!(host->falling_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
 			continue;
 #endif
@@ -2666,10 +2956,10 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 		/*
 		 * Using the same parameters, it may sometimes pass the test,
 		 * but sometimes it may fail. To make sure the parameters are
-		 * more stable, we test each set of parameters PAD_DELAY_TUNING_LOOP times.
+		 * more stable, we test each set of parameters host->tuning_loop times.
 		 */
 		cmd_err = 0;
-		for (j = 0; j < PAD_DELAY_TUNING_LOOP; j++) {
+		for (j = 0; j < host->tuning_loop; j++) {
 			mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (!cmd_err) {
 				fall_delay |= (PAD_DELAY_BIT_TYPE << i);
@@ -2707,10 +2997,10 @@ skip_fall:
 		/*
 		 * Using the same parameters, it may sometimes pass the test,
 		 * but sometimes it may fail. To make sure the parameters are
-		 * more stable, we test each set of parameters PAD_DELAY_TUNING_LOOP times.
+		 * more stable, we test each set of parameters host->tuning_loop times.
 		 */
 		cmd_err = 0;
-		for (j = 0; j < PAD_DELAY_TUNING_LOOP; j++) {
+		for (j = 0; j < host->tuning_loop; j++) {
 			mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (!cmd_err)
 				internal_delay |= (PAD_DELAY_BIT_TYPE << i);
@@ -2760,10 +3050,10 @@ static int hs400_tune_response(struct mmc_host *mmc, u32 opcode)
 		/*
 		 * Using the same parameters, it may sometimes pass the test,
 		 * but sometimes it may fail. To make sure the parameters are
-		 * more stable, we test each set of parameters PAD_DELAY_TUNING_LOOP times.
+		 * more stable, we test each set of parameters host->tuning_loop times.
 		 */
 		cmd_err = 0;
-		for (j = 0; j < PAD_DELAY_TUNING_LOOP; j++) {
+		for (j = 0; j < host->tuning_loop; j++) {
 			mmc_send_tuning(mmc, opcode, &cmd_err);
 			if (!cmd_err) {
 				cmd_delay |= (PAD_DELAY_BIT_TYPE << i);
@@ -2797,16 +3087,22 @@ static int msdc_tune_data(struct mmc_host *mmc, u32 opcode)
 	sdr_clr_bits(host->base + MSDC_IOCON, MSDC_IOCON_W_DSPL);
 	for (i = 0 ; i < PAD_DELAY_BIT_MAX; i++) {
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
-		if (!(host->rising_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
+		/**
+		 * If tuning_both_edges is false, we would like to know whether
+		 * the rising delay map is good as expected or not.
+		 *
+		 * So we must check all delays here.
+		 */
+		if (host->tuning_both_edges && !(host->rising_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
 			continue;
 #endif
 		msdc_set_data_delay(host, i);
 		/*
 		 * Using the same parameters, it may sometimes pass the test,
 		 * but sometimes it may fail. To make sure the parameters are
-		 * more stable, we test each set of parameters PAD_DELAY_TUNING_LOOP times.
+		 * more stable, we test each set of parameters host->tuning_loop times.
 		 */
-		for (j = 0; j < PAD_DELAY_TUNING_LOOP; j++) {
+		for (j = 0; j < host->tuning_loop; j++) {
 			ret = mmc_send_tuning(mmc, opcode, NULL);
 			if (!ret)
 				rise_delay |= (PAD_DELAY_BIT_TYPE << i);
@@ -2817,13 +3113,34 @@ static int msdc_tune_data(struct mmc_host *mmc, u32 opcode)
 		}
 	}
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+	if (!host->tuning_both_edges) {
+		int vcore = host->vcore_power ? regulator_get_voltage(host->vcore_power) : -1;
+
+		/**
+		 * If the rising delay map is not good as expected,
+		 * force to do the falling edge delay tuning for the best delay comparison.
+		 * The system will tune the both edges and get the best delay from rising or falling.
+		 */
+		if (msdc_check_tune_both_edges(host, rise_delay, vcore))
+			/* The system will tune the both edges and get the best delay from rising or falling. */
+			host->tuning_both_edges = true;
+
+		if (rise_delay && (rise_delay & host->rising_delay_map_mask) != rise_delay)
+			dev_alert(host->dev, "[rising:0x%" PAD_DELAY_PRIx0 "->0x%" PAD_DELAY_PRIx "] @vcore:%d\n",
+				rise_delay, (rise_delay & host->rising_delay_map_mask), vcore);
+#if 0
+		else
+			dev_alert(host->dev, "[rising:0x%" PAD_DELAY_PRIx "] @vcore:%d\n", rise_delay, vcore);
+#endif
+	}
+
 	rise_delay &= host->rising_delay_map_mask;
 #endif
 	final_rise_delay = get_best_delay(host, rise_delay, "Rising");
 	/* if rising edge has enough margin, then do not scan falling edge */
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
 	if (!host->tuning_both_edges &&
-		(final_rise_delay.maxlen >= host->rising_delay_mask_phase.maxlen))
+		((int)final_rise_delay.maxlen >= host->rising_delay_min_length))
 		goto skip_fall;
 #else
 	if (!host->tuning_both_edges && (final_rise_delay.maxlen >= 12 ||
@@ -2835,6 +3152,7 @@ static int msdc_tune_data(struct mmc_host *mmc, u32 opcode)
 	sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_W_DSPL);
 	for (i = 0; i < PAD_DELAY_BIT_MAX; i++) {
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+		/* Here is the falling edge tuning so only tune for falling_delay_map_mask. */
 		if (!(host->falling_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
 			continue;
 #endif
@@ -2842,9 +3160,9 @@ static int msdc_tune_data(struct mmc_host *mmc, u32 opcode)
 		/*
 		 * Using the same parameters, it may sometimes pass the test,
 		 * but sometimes it may fail. To make sure the parameters are
-		 * more stable, we test each set of parameters PAD_DELAY_TUNING_LOOP times.
+		 * more stable, we test each set of parameters host->tuning_loop times.
 		 */
-		for (j = 0; j < PAD_DELAY_TUNING_LOOP; j++) {
+		for (j = 0; j < host->tuning_loop; j++) {
 			ret = mmc_send_tuning(mmc, opcode, NULL);
 			if (!ret)
 				fall_delay |= (PAD_DELAY_BIT_TYPE << i);
@@ -2900,7 +3218,13 @@ static int msdc_tune_together(struct mmc_host *mmc, u32 opcode)
 		     MSDC_IOCON_DSPL | MSDC_IOCON_W_DSPL);
 	for (i = 0 ; i < PAD_DELAY_BIT_MAX; i++) {
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
-		if (!(host->rising_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
+		/**
+		 * If tuning_both_edges is false, we would like to know whether
+		 * the rising delay map is good as expected or not.
+		 *
+		 * So we must check all delays here.
+		 */
+		if (host->tuning_both_edges && !(host->rising_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
 			continue;
 #endif
 		msdc_set_cmd_delay(host, i);
@@ -2908,9 +3232,9 @@ static int msdc_tune_together(struct mmc_host *mmc, u32 opcode)
 		/*
 		 * Using the same parameters, it may sometimes pass the test,
 		 * but sometimes it may fail. To make sure the parameters are
-		 * more stable, we test each set of parameters PAD_DELAY_TUNING_LOOP times.
+		 * more stable, we test each set of parameters host->tuning_loop times.
 		 */
-		for (j = 0; j < PAD_DELAY_TUNING_LOOP; j++) {
+		for (j = 0; j < host->tuning_loop; j++) {
 			ret = mmc_send_tuning(mmc, opcode, NULL);
 			if (!ret)
 				rise_delay |= (PAD_DELAY_BIT_TYPE << i);
@@ -2921,13 +3245,34 @@ static int msdc_tune_together(struct mmc_host *mmc, u32 opcode)
 		}
 	}
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+	if (!host->tuning_both_edges) {
+		int vcore = host->vcore_power ? regulator_get_voltage(host->vcore_power) : -1;
+
+		/**
+		 * If the rising delay map is not good as expected,
+		 * force to do the falling edge delay tuning for the best delay comparison.
+		 * The system will tune the both edges and get the best delay from rising or falling.
+		 */
+		if (msdc_check_tune_both_edges(host, rise_delay, vcore))
+			/* The system will tune the both edges and get the best delay from rising or falling. */
+			host->tuning_both_edges = true;
+
+		if (rise_delay && (rise_delay & host->rising_delay_map_mask) != rise_delay)
+			dev_alert(host->dev, "[rising:0x%" PAD_DELAY_PRIx0 "->0x%" PAD_DELAY_PRIx "] @vcore:%d\n",
+				rise_delay, (rise_delay & host->rising_delay_map_mask), vcore);
+#if 0
+		else
+			dev_alert(host->dev, "[rising:0x%" PAD_DELAY_PRIx "] @vcore:%d\n", rise_delay, vcore);
+#endif
+	}
+
 	rise_delay &= host->rising_delay_map_mask;
 #endif
 	final_rise_delay = get_best_delay(host, rise_delay, "Rising");
 	/* if rising edge has enough margin, then do not scan falling edge */
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
 	if (!host->tuning_both_edges &&
-		(final_rise_delay.maxlen >= host->rising_delay_mask_phase.maxlen))
+		((int)final_rise_delay.maxlen >= host->rising_delay_min_length))
 		goto skip_fall;
 #else
 	if (!host->tuning_both_edges && (final_rise_delay.maxlen >= 12 ||
@@ -2940,6 +3285,7 @@ static int msdc_tune_together(struct mmc_host *mmc, u32 opcode)
 		     MSDC_IOCON_DSPL | MSDC_IOCON_W_DSPL);
 	for (i = 0; i < PAD_DELAY_BIT_MAX; i++) {
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+		/* Here is the falling edge tuning so only tune for falling_delay_map_mask. */
 		if (!(host->falling_delay_map_mask & (PAD_DELAY_BIT_TYPE << i)))
 			continue;
 #endif
@@ -2948,9 +3294,9 @@ static int msdc_tune_together(struct mmc_host *mmc, u32 opcode)
 		/*
 		 * Using the same parameters, it may sometimes pass the test,
 		 * but sometimes it may fail. To make sure the parameters are
-		 * more stable, we test each set of parameters PAD_DELAY_TUNING_LOOP times.
+		 * more stable, we test each set of parameters host->tuning_loop times.
 		 */
-		for (j = 0; j < PAD_DELAY_TUNING_LOOP; j++) {
+		for (j = 0; j < host->tuning_loop; j++) {
 			ret = mmc_send_tuning(mmc, opcode, NULL);
 			if (!ret)
 				fall_delay |= (PAD_DELAY_BIT_TYPE << i);
@@ -2994,12 +3340,7 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	struct msdc_host *host = mmc_priv(mmc);
 	int ret;
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
-
-#ifdef ICOM_MTK_MMC_DVFSRC_VCORE
-	if (host->dvfsrc_vcore_power)
-		dev_alert(host->dev, "tuning @ vcore:%d\n",
-			regulator_get_voltage(host->dvfsrc_vcore_power));
-#endif
+	ktime_t time_start = ktime_get();
 
 	if (host->dev_comp->data_tune && host->dev_comp->async_fifo) {
 		ret = msdc_tune_together(mmc, opcode);
@@ -3019,7 +3360,8 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 		ret = msdc_tune_response(mmc, opcode);
 	if (ret == -EIO) {
 		dev_err(host->dev, "Tune response fail!\n");
-		return ret;
+		//return ret;
+		goto tune_done;
 	}
 	if (host->hs400_mode == false) {
 		ret = msdc_tune_data(mmc, opcode);
@@ -3037,6 +3379,14 @@ tune_done:
 		host->saved_tune_para.emmc_top_cmd = readl(host->top_base +
 				EMMC_TOP_CMD);
 	}
+
+	if (host->vcore_power)
+		dev_alert(host->dev, "tuning cost %lld us @vcore:%d\n",
+			ktime_us_delta(ktime_get(), time_start), regulator_get_voltage(host->vcore_power));
+	else
+		dev_alert(host->dev, "tuning cost %lld us\n",
+			ktime_us_delta(ktime_get(), time_start));
+
 	return ret;
 }
 
@@ -3095,6 +3445,7 @@ static int msdc_get_cd(struct mmc_host *mmc)
 		return !val;
 }
 
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 static void msdc_cqe_enable(struct mmc_host *mmc)
 {
 	struct msdc_host *host = mmc_priv(mmc);
@@ -3158,6 +3509,7 @@ static void msdc_cqe_post_disable(struct mmc_host *mmc)
 	reg &= ~CQHCI_ENABLE;
 	cqhci_writel(cq_host, reg, CQHCI_CFG);
 }
+#endif
 
 static const struct mmc_host_ops mt_msdc_ops = {
 	.post_req = msdc_post_req,
@@ -3182,7 +3534,7 @@ static irqreturn_t msdc_sdio_eint_irq(int irq, void *dev_id)
 	unsigned long flags;
 
 	spin_lock_irqsave(&host->lock, flags);
-	//dev_info(host->dev, "msdc_sdio_eint_irq: sdio_irq_cnt=%d\n", host->sdio_irq_cnt);
+	//dev_alert(host->dev, "msdc_sdio_eint_irq: sdio_irq_cnt=%d\n", host->sdio_irq_cnt);
 	if (likely(host->sdio_irq_cnt > 0)) {
 		disable_irq_nosync(host->eint_irq);
 		disable_irq_wake(host->eint_irq);
@@ -3220,16 +3572,24 @@ static int msdc_request_dat1_eint_irq(struct msdc_host *host)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 static const struct cqhci_host_ops msdc_cmdq_ops = {
 	.enable         = msdc_cqe_enable,
 	.disable        = msdc_cqe_disable,
 	.pre_enable = msdc_cqe_pre_enable,
 	.post_disable = msdc_cqe_post_disable,
 };
+#endif
 
 static void msdc_of_property_parse(struct platform_device *pdev,
 				   struct msdc_host *host)
 {
+	u32 value;
+
+	/**
+	 * If 'tuning-both-edges' is defined,
+	 * the system will tune the both edges and get the best delay from rising or falling.
+	 */
 	if (of_property_read_bool(pdev->dev.of_node, "tuning-both-edges"))
 		host->tuning_both_edges = true;
 	else
@@ -3237,32 +3597,71 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 	dev_dbg(&pdev->dev, "tuning-both-edges: %u\n", host->tuning_both_edges);
 
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+	/**
+	 * If 'rising-delay-map-mask' is defined,
+	 * the system will mask the the current tuned rising phase delay map with 'rising-delay-map-mask'.
+	 *
+	 * If 'falling-delay-map-mask' is defined,
+	 * the system will mask the the current tuned falling phase delay map with 'falling-delay-map-mask'.
+	 *
+	 * If the vcore voltage is not locked,
+	 * both 'rising-delay-map-mask' and 'falling-delay-map-mask' can be used to limit the result of the delay map.
+	 * The delay map mask value is the expected delay map that is suitable for all vcore voltage levels.
+	 *
+	 * So please perform the stress retune at all vcore voltage levels and find out a reasonable delay map mask.
+	 */
 #ifdef PAD_DELAY_USE_64BITS
 	if (of_property_read_u64(pdev->dev.of_node, "rising-delay-map-mask",
 			&host->rising_delay_map_mask) || host->rising_delay_map_mask == 0)
 		host->rising_delay_map_mask = 0xffffffffffffffff;
+	else
+		dev_alert(&pdev->dev, "rising-delay-map-mask: 0x%" PAD_DELAY_PRIx0 "\n",
+			host->rising_delay_map_mask);
 
 	if (of_property_read_u64(pdev->dev.of_node, "falling-delay-map-mask",
 			&host->falling_delay_map_mask) || host->falling_delay_map_mask == 0)
 		host->falling_delay_map_mask = 0xffffffffffffffff;
+	else
+		dev_alert(&pdev->dev, "falling-delay-map-mask: 0x%" PAD_DELAY_PRIx0 "\n",
+			host->falling_delay_map_mask);
 #else
 	if (of_property_read_u32(pdev->dev.of_node, "rising-delay-map-mask",
 			&host->rising_delay_map_mask) || host->rising_delay_map_mask == 0)
 		host->rising_delay_map_mask = 0xffffffff;
+	else
+		dev_alert(&pdev->dev, "rising-delay-map-mask: 0x%" PAD_DELAY_PRIx0 "\n",
+			host->rising_delay_map_mask);
 
 	if (of_property_read_u32(pdev->dev.of_node, "falling-delay-map-mask",
 			&host->falling_delay_map_mask) || host->falling_delay_map_mask == 0)
 		host->falling_delay_map_mask = 0xffffffff;
+	else
+		dev_alert(&pdev->dev, "falling-delay-map-mask: 0x%" PAD_DELAY_PRIx0 "\n",
+			host->falling_delay_map_mask);
 #endif
 
-	dev_dbg(&pdev->dev, "rising-delay-map-mask: 0x%" PAD_DELAY_PRIx0 "\n",
-			host->rising_delay_map_mask);
-	dev_dbg(&pdev->dev, "falling-delay-map-mask: 0x%" PAD_DELAY_PRIx0 "\n",
-			host->falling_delay_map_mask);
-
-	host->rising_delay_mask_phase = get_best_delay(host,
-			host->rising_delay_map_mask, "Rising-MASK");
+	/**
+	 * The default 'rising-delay-min-length' is PAD_DELAY_RISING_MIN_LENGTH.
+	 *
+	 * For the false of 'tuning-both-edges' case,
+	 * if the max length of the tuned rising delay map is equal to or greater than 'rising-delay-min-length',
+	 * the system will pick the rising phase tuning result and won't run the falling tuning case.
+	 */
+	value = 0;
+	if (of_property_read_u32(pdev->dev.of_node, "rising-delay-min-length", &value) ||
+			value == 0 || value > PAD_DELAY_BIT_MAX)
+		value = PAD_DELAY_RISING_MIN_LENGTH;
+	host->rising_delay_min_length = (int)value;
+	dev_dbg(&pdev->dev, "rising-delay-min-length: %d\n", host->rising_delay_min_length);
 #endif /* ICOM_MTK_MMC_NEW_BEST_DELAY */
+
+	/* Define the tuning loop number for each delay at tuning */
+	value = 0;
+	if (of_property_read_u32(pdev->dev.of_node, "each-delay-tuning-loop", &value) ||
+			value < 3 || value > 40)
+		value = PAD_DELAY_TUNING_LOOP;
+	host->tuning_loop = (int)value;
+	dev_dbg(&pdev->dev, "each-delay-tuning-loop: %d\n", host->tuning_loop);
 
 	of_property_read_u32(pdev->dev.of_node, "mediatek,ckgen-delay",
 			     &host->ckgen_delay);
@@ -3288,38 +3687,318 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 	else
 		host->hs400_cmd_resp_sel_rising = false;
 
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 	if (of_property_read_bool(pdev->dev.of_node,
 				  "supports-cqe"))
 		host->cqhci = true;
 	else
 		host->cqhci = false;
+#else
+	host->cqhci = false;
+#endif
+
+	/* 'vcore-supply' is the PMIC regulator that is used to get the current vcore voltage. */
+	if (of_property_read_bool(pdev->dev.of_node, "vcore-supply")) {
+		host->vcore_power = devm_regulator_get_optional(&pdev->dev, "vcore");
+		if (IS_ERR(host->vcore_power)) {
+			dev_warn(&pdev->dev, "failed to get vcore regulator: %d\n",
+				PTR_ERR(host->vcore_power));
+			host->vcore_power = NULL;
+		}
+	} else
+		host->vcore_power = NULL;
+
+#ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
+	if (!host->tuning_both_edges && host->vcore_power) {
+		int n_vcore_table, n_rising_map_table;
+
+		/**
+		 * If the rising delay map is not good as expected,
+		 * force to do the falling edge delay tuning for the best delay comparison.
+		 * The system will tune the both edges and get the best delay from rising or falling.
+		 *
+		 * Define the expected rising delay maps for all vcore voltage levels by 'rising-expected-delay-maps'.
+		 */
+		n_vcore_table = of_property_count_elems_of_size(pdev->dev.of_node,
+						"vcore-levels", sizeof(u32));
+		n_rising_map_table = of_property_count_elems_of_size(pdev->dev.of_node,
+						"rising-expected-delay-maps", sizeof(PAD_DELAY_TYPE));
+		if (n_vcore_table > 0 && n_vcore_table == n_rising_map_table) {
+			host->vcore_lookup_table = devm_kcalloc(&pdev->dev,
+					n_vcore_table, sizeof(*host->vcore_lookup_table),
+					GFP_KERNEL);
+			host->rising_expected_delay_maps = devm_kcalloc(&pdev->dev,
+					n_vcore_table, sizeof(*host->rising_expected_delay_maps),
+					GFP_KERNEL);
+			if (host->vcore_lookup_table && host->rising_expected_delay_maps) {
+				int err = of_property_read_u32_array(pdev->dev.of_node, "vcore-levels",
+					 		(u32 *)host->vcore_lookup_table, n_vcore_table);
+				if (!err) {
+#ifdef PAD_DELAY_USE_64BITS
+					err = of_property_read_u64_array(pdev->dev.of_node, "rising-expected-delay-maps",
+					 	(u64 *)host->rising_expected_delay_maps, n_rising_map_table);
+#else
+					err = of_property_read_u32_array(pdev->dev.of_node, "rising-expected-delay-maps",
+					 	(u32 *)host->rising_expected_delay_maps, n_rising_map_table);
+#endif
+					if (err) {
+						dev_err(&pdev->dev, "failed to get rising-expected-delay-maps: %d\n", err);
+						devm_kfree(&pdev->dev, host->vcore_lookup_table);
+						devm_kfree(&pdev->dev, host->rising_expected_delay_maps);
+						host->vcore_lookup_table = NULL;
+						host->rising_expected_delay_maps = NULL;
+					} else {
+						host->n_vcore_lookup_table = n_vcore_table;
+#if 0
+						for (err = 0 ; err < n_vcore_table ; err++)
+							dev_alert(&pdev->dev,
+								"[%d] [vcore:%u] [rising-expected-delay:0x%" PAD_DELAY_PRIx0 "]\n",
+								err,
+								host->vcore_lookup_table[err],
+								host->rising_expected_delay_maps[err]);
+#endif
+					}
+				} else {
+					dev_err(&pdev->dev, "failed to get vcore-levels: %d\n", err);
+					devm_kfree(&pdev->dev, host->vcore_lookup_table);
+					devm_kfree(&pdev->dev, host->rising_expected_delay_maps);
+					host->vcore_lookup_table = NULL;
+					host->rising_expected_delay_maps = NULL;
+				}
+			} else {
+				dev_err(&pdev->dev, "out of memeory (vcore_lookup_table/rising_expected_delay_maps)\n");
+				if (host->vcore_lookup_table)
+					devm_kfree(&pdev->dev, host->vcore_lookup_table);
+				if (host->rising_expected_delay_maps)
+					devm_kfree(&pdev->dev, host->rising_expected_delay_maps);
+				host->vcore_lookup_table = NULL;
+				host->rising_expected_delay_maps = NULL;
+			}
+		} else if (n_vcore_table > 0 && n_vcore_table != n_rising_map_table)
+			dev_warn(&pdev->dev, "invalid vcore-levels (%d) and rising-expected-delay-maps (%d)\n",
+					n_vcore_table, n_rising_map_table);
+	}
+#endif
 
 #ifdef ICOM_MTK_MMC_DVFSRC_VCORE
-	if (of_property_read_bool(pdev->dev.of_node, "dvfsrc-vcore-supply")) {
+	/**
+	 * MSDC phase tuning delay map is highly related to the vcore voltage level.
+	 * The vcore voltage impacts on the phase tuning delay result.
+	 *
+	 * If you would like to reduce the impact of the vcore voltage,
+	 * please lock the vcore voltage level ('req-vcore') and
+	 * turn on the runtime PM to reduce the impact on the power consumption.
+	 */
+	value = 0;
+	of_property_read_u32(pdev->dev.of_node, "req-vcore", &value);
+	host->req_vcore = (int)value;
+	dev_dbg(&pdev->dev, "dvfsrc-vcore req-vcore: %d\n", host->req_vcore);
+	if (host->req_vcore > 0 && of_property_read_bool(pdev->dev.of_node, "dvfsrc-vcore-supply")) {
 		host->dvfsrc_vcore_power = devm_regulator_get_optional(&pdev->dev, "dvfsrc-vcore");
 		if (IS_ERR(host->dvfsrc_vcore_power)) {
 			dev_warn(&pdev->dev, "failed to get dvfsrc-vcore regulator: %d\n",
 				PTR_ERR(host->dvfsrc_vcore_power));
 			host->dvfsrc_vcore_power = NULL;
+			host->req_vcore = 0;
 		}
 	} else
 		host->dvfsrc_vcore_power = NULL;
+#endif
 
-	if (of_property_read_u32(pdev->dev.of_node, "req-vcore", &host->req_vcore))
-	    host->req_vcore = 0;
-#if 0
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+	/**
+	 * There are throughput performance issues if the CPU latency is not locked.
+	 * Please check the exit_latency of each CPU idle state to define the CPU latency request.
+	 *
+	 * If 'affinity-hint-cpu-latency-req' is defined,
+	 * the system will use the specific affinity_hint_cpu to request its CPU latency.
+	 * Please note that the CPU latency request of the specific affinity_hint_cpu is not thread safe.
+	 *
+	 * If you don't know what 'affinity-hint-cpu-latency-req' is, please use 'cpu-latency-req' instead.
+	 * In short, It's "device request" vs. "global request".
+	 * Please refer to cpuidle_governor_latency_req().
+	 */
+	if (of_property_read_u32(pdev->dev.of_node, "affinity-hint-cpu-latency-req", &value)) {
+		host->use_affinity_hint_cpu_latency = false;
+		if (of_property_read_u32(pdev->dev.of_node, "cpu-latency-req", &value))
+			host->cpu_latency_req = -EINVAL;
+		else
+			host->cpu_latency_req = (int)value;
+	} else {
+		host->use_affinity_hint_cpu_latency = true;
+		host->cpu_latency_req = (int)value;
+	}
+	if (host->use_affinity_hint_cpu_latency)
+		dev_dbg(&pdev->dev, "affinity-hint-cpu-latency-req: %d\n", host->cpu_latency_req);
 	else
-		dev_info(&pdev->dev, "dvfsrc-vcore req-vcore: %u\n", host->req_vcore);
+		dev_dbg(&pdev->dev, "cpu-latency-req: %d\n", host->cpu_latency_req);
 #endif
-#endif
+
+	/* clk_auto_powerdown == true => Clear MSDC_CFG_CKPDN bit always:
+	 *   1'b0: Clock will be gated to 0 if no command or data is transmitted.
+	 *   1'b1: Clock will be running freely even if no command or data is
+	 *         transmitted.  (The clock may still be stopped when MSDC write data are
+	 *         not enough or there is no space for the next read data.)
+	 */
+	if (of_property_read_bool(pdev->dev.of_node, "clk-auto-power-down"))
+		host->clk_auto_powerdown = true;
+	else
+		host->clk_auto_powerdown = false;
+	dev_dbg(&pdev->dev, "clk-auto-power-down: %d\n", host->clk_auto_powerdown);
+
+	/** ahb_bus_no_incr1 == true => Set ENABLE_SINGLE_BURST bit:
+	 *   AHB bus will not support incr1 burst type in future. This will only affect AHB bus MSDC design, but not AXI bus design.
+	 *     1'b0: HW will send incr1 burst type.
+	 *     1'b1: HW will send single burst type instead of incr1 type.
+	 */
+	if (of_property_read_bool(pdev->dev.of_node, "ahb-bus-no-incr1"))
+		host->ahb_bus_no_incr1 = true;
+	else
+		host->ahb_bus_no_incr1 = false;
+	dev_dbg(&pdev->dev, "ahb-bus-no-incr1: %d\n", host->ahb_bus_no_incr1);
+
 	if (of_property_read_u32(pdev->dev.of_node, "autosuspend-delay",
 			&host->autosuspend_delay))
 		host->autosuspend_delay = MTK_MMC_AUTOSUSPEND_DELAY;
 	else if (host->autosuspend_delay < MTK_MMC_AUTOSUSPEND_DELAY)
 		host->autosuspend_delay = MTK_MMC_AUTOSUSPEND_DELAY;
 	else
-		dev_info(&pdev->dev, "autosuspend-delay: %u\n", host->autosuspend_delay);
+		dev_dbg(&pdev->dev, "autosuspend-delay: %u\n", host->autosuspend_delay);
+
+	/* Support to rollback to the default signal voltage. */
+	if (of_property_read_bool(pdev->dev.of_node, "sd-poweroff-reset-signal-volt"))
+		host->sd_poweroff_reset_signal_volt = true;
+	else
+		host->sd_poweroff_reset_signal_volt = false;
+	dev_dbg(&pdev->dev, "sd-poweroff-reset-signal-volt: %d\n", host->sd_poweroff_reset_signal_volt);
 }
+
+static int msdc_of_clock_parse(struct platform_device *pdev,
+			       struct msdc_host *host)
+{
+	int ret;
+
+	host->src_clk = devm_clk_get(&pdev->dev, "source");
+	if (IS_ERR(host->src_clk))
+		return PTR_ERR(host->src_clk);
+
+	host->h_clk = devm_clk_get(&pdev->dev, "hclk");
+	if (IS_ERR(host->h_clk))
+		return PTR_ERR(host->h_clk);
+
+	host->bus_clk = devm_clk_get_optional(&pdev->dev, "bus_clk");
+	if (IS_ERR(host->bus_clk))
+		host->bus_clk = NULL;
+
+	host->crypto_clk = devm_clk_get_optional(&pdev->dev, "crypto_clk");
+	if (IS_ERR(host->crypto_clk)) {
+		host->crypto_clk = NULL;
+		dev_info(&pdev->dev, "Cannot get crypto clk\n");
+	}
+
+	/*source clock control gate is optional clock*/
+	host->src_clk_cg = devm_clk_get_optional(&pdev->dev, "source_cg");
+	if (IS_ERR(host->src_clk_cg))
+		return PTR_ERR(host->src_clk_cg);
+
+	/*
+	 * Fallback for legacy device-trees: src_clk and HCLK use the same
+	 * bit to control gating but they are parented to a different mux,
+	 * hence if our intention is to gate only the source, required
+	 * during a clk mode switch to avoid hw hangs, we need to gate
+	 * its parent (specified as a different clock only on new DTs).
+	 */
+	if (!host->src_clk_cg) {
+		host->src_clk_cg = clk_get_parent(host->src_clk);
+		if (IS_ERR(host->src_clk_cg))
+			return PTR_ERR(host->src_clk_cg);
+	}
+
+	host->sys_clk_cg = devm_clk_get_optional(&pdev->dev, "sys_cg");
+	if (IS_ERR(host->sys_clk_cg))
+		host->sys_clk_cg = NULL;
+
+	host->crypto_cg = devm_clk_get_optional(&pdev->dev, "crypto_cg");
+	if (IS_ERR(host->crypto_cg))
+		host->crypto_cg = NULL;
+
+	/* If present, always enable for this clock gate */
+	ret = clk_prepare_enable(host->sys_clk_cg);
+	if (ret) {
+		dev_err(&pdev->dev, "Cannot get prepare sys_cg clk\n");
+		return ret;
+	}
+	host->bulk_clks[0].id = "pclk_cg";
+	host->bulk_clks[1].id = "axi_cg";
+	host->bulk_clks[2].id = "ahb_cg";
+	ret = devm_clk_bulk_get_optional(&pdev->dev, MSDC_NR_CLOCKS,
+					 host->bulk_clks);
+	if (ret) {
+		dev_err(&pdev->dev, "Cannot get pclk/axi/ahb clock gates\n");
+		return ret;
+	}
+
+	return 0;
+}
+
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+static ssize_t cpu_latency_req_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+	struct msdc_host *host = mmc_priv(mmc);
+
+	return sysfs_emit(buf, "%d\n", host->cpu_latency_req);
+}
+
+static ssize_t cpu_latency_req_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t n)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+	struct msdc_host *host = mmc_priv(mmc);
+	s32 value = -EINVAL;
+
+	if (kstrtos32(buf, 0, &value))
+		return -EINVAL;
+
+	if (host->cpu_latency_req < 0 && value >= 0) {
+		/* NEW */
+		host->cpu_latency_req = value; /* update in next request */
+		if (host->cpu_dev)
+			dev_pm_qos_update_request(host->cpu_dev->power.qos->resume_latency_req,
+				PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		else
+			cpu_latency_qos_add_request(&host->pm_qos_req, PM_QOS_DEFAULT_VALUE);
+		dev_alert(dev, "ADDED cpu-latency-req: %d\n", host->cpu_latency_req);
+	} else if (host->cpu_latency_req >= 0 && value < 0) {
+		/* REMOVE */
+		host->cpu_latency_req = value;
+		if (host->cpu_dev)
+			dev_pm_qos_update_request(host->cpu_dev->power.qos->resume_latency_req,
+				PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		else
+			cpu_latency_qos_remove_request(&host->pm_qos_req);
+		dev_alert(dev, "REMOVED cpu-latency-req: %d\n", host->cpu_latency_req);
+	} else if (host->cpu_latency_req >= 0 && value >= 0) {
+		/* UPDATE */
+		host->cpu_latency_req = value; /* update in next request */
+#if 0
+		if (host->cpu_dev)
+			dev_pm_qos_update_request(host->cpu_dev->power.qos->resume_latency_req,
+				host->cpu_latency_req);
+		else
+			cpu_latency_qos_update_request(&host->pm_qos_req, host->cpu_latency_req);
+#endif
+		dev_alert(dev, "UPDATE cpu-latency-req: %d at NEXT runtime resume\n", host->cpu_latency_req);
+	}
+
+	return n;
+}
+
+static DEVICE_ATTR_RW(cpu_latency_req);
+#endif
 
 static ssize_t tuning_both_edges_show(struct device *dev,
 					struct device_attribute *attr,
@@ -3437,6 +4116,36 @@ static ssize_t falling_delay_map_mask_store(struct device *dev,
 static DEVICE_ATTR_RW(falling_delay_map_mask);
 #endif
 
+static ssize_t clk_auto_powerdown_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+	struct msdc_host *host = mmc_priv(mmc);
+
+	return sysfs_emit(buf, "%d\n", host->clk_auto_powerdown);
+}
+
+static ssize_t clk_auto_powerdown_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t n)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+	struct msdc_host *host = mmc_priv(mmc);
+	s32 value = 0;
+
+	if (kstrtos32(buf, 0, &value) || value < 0)
+		return -EINVAL;
+
+	dev_alert(dev, "new clk-auto-power-down: %u (for next rescan)\n", value);
+
+	host->clk_auto_powerdown = value ? true : false;
+
+	return n;
+}
+
+static DEVICE_ATTR_RW(clk_auto_powerdown);
+
 static ssize_t ckgen_delay_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
@@ -3519,12 +4228,15 @@ static ssize_t force_rescan_show(struct device *dev,
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct msdc_host *host = mmc_priv(mmc);
 
+	dev_alert(dev, "force rescan\n");
+
 	pm_runtime_get_sync(host->dev);
 
 	mmc_remove_host(mmc);
 
-	mmc->rescan_entered = 0;
+	msleep(500);
 
+	mmc->rescan_entered = 0;
 	mmc_add_host(mmc);
 
 	pm_runtime_put_noidle(host->dev);
@@ -3536,16 +4248,50 @@ static ssize_t force_rescan_show(struct device *dev,
 
 static DEVICE_ATTR_RO(force_rescan);
 
+static ssize_t host_remove_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+
+	mmc_remove_host(mmc);
+	mmc->rescan_entered = 0;
+
+	return 0;
+}
+
+static DEVICE_ATTR_RO(host_remove);
+
+static ssize_t host_add_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+
+	mmc->rescan_entered = 0;
+	mmc_add_host(mmc);
+
+	return 0;
+}
+
+static DEVICE_ATTR_RO(host_add);
+
 static struct attribute *_attributes[] = {
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+	&dev_attr_cpu_latency_req.attr,
+#endif
 	&dev_attr_tuning_both_edges.attr,
 #ifdef ICOM_MTK_MMC_NEW_BEST_DELAY
 	&dev_attr_rising_delay_map_mask.attr,
 	&dev_attr_falling_delay_map_mask.attr,
 #endif
+	&dev_attr_clk_auto_powerdown.attr,
 	&dev_attr_ckgen_delay.attr,
 	&dev_attr_latch_ck.attr,
 	&dev_attr_retune.attr,
 	&dev_attr_force_rescan.attr,
+	&dev_attr_host_remove.attr,
+	&dev_attr_host_add.attr,
 	NULL,
 };
 
@@ -3613,6 +4359,11 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	if (ret)
 		goto host_free;
 
+	ratelimit_state_init(&host->cmd_err_ratelimit, 5 * HZ, 1); /* 5secs */
+	ratelimit_state_init(&host->cmd_err_crc_ratelimit, HZ, 1); /* 1sec */
+	ratelimit_state_init(&host->data_err_ratelimit, 5 * HZ, 1); /* 5secs */
+	ratelimit_state_init(&host->data_err_crc_ratelimit, HZ, 1); /* 1secs */
+
 	if (device_property_read_bool(mmc->parent, "cap-sdio-async-int"))
 		host->enable_async_irq = true;
 
@@ -3653,43 +4404,9 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "No vio-b regulator found\n");
 	}
 
-	host->src_clk = devm_clk_get(&pdev->dev, "source");
-	if (IS_ERR(host->src_clk)) {
-		dev_dbg(&pdev->dev, "can't find source clk");
-		ret = PTR_ERR(host->src_clk);
+	ret = msdc_of_clock_parse(pdev, host);
+	if (ret)
 		goto host_free;
-	}
-
-	host->h_clk = devm_clk_get(&pdev->dev, "hclk");
-	if (IS_ERR(host->h_clk)) {
-		dev_dbg(&pdev->dev, "can't find hclk");
-		ret = PTR_ERR(host->h_clk);
-		goto host_free;
-	}
-
-	host->bus_clk = devm_clk_get(&pdev->dev, "bus_clk");
-	if (IS_ERR(host->bus_clk))
-		host->bus_clk = NULL;
-
-	/*source clock control gate is optional clock*/
-	host->src_clk_cg = devm_clk_get(&pdev->dev, "source_cg");
-	if (IS_ERR(host->src_clk_cg))
-		host->src_clk_cg = NULL;
-
-	/*
-	 * Fallback for legacy device-trees: src_clk and HCLK use the same
-	 * bit to control gating but they are parented to a different mux,
-	 * hence if our intention is to gate only the source, required
-	 * during a clk mode switch to avoid hw hangs, we need to gate
-	 * its parent (specified as a different clock only on new DTs).
-	 */
-	if (!host->src_clk_cg) {
-		host->src_clk_cg = clk_get_parent(host->src_clk);
-		if (IS_ERR(host->src_clk_cg)) {
-			ret = PTR_ERR(host->src_clk_cg);
-			goto host_free;
-		}
-	}
 
 	host->reset = devm_reset_control_get_optional_exclusive(&pdev->dev,
 								"hrst");
@@ -3697,18 +4414,6 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		ret = PTR_ERR(host->reset);
 		goto host_free;
 	}
-
-	host->p_clk = devm_clk_get(&pdev->dev, "p_clk");
-	if (IS_ERR(host->p_clk))
-		host->p_clk = NULL;
-
-	host->axi_clk = devm_clk_get(&pdev->dev, "axi_clk");
-	if (IS_ERR(host->axi_clk))
-		host->axi_clk = NULL;
-
-	host->ahb_clk = devm_clk_get(&pdev->dev, "ahb_clk");
-	if (IS_ERR(host->ahb_clk))
-		host->ahb_clk = NULL;
 
 	host->irq = platform_get_irq(pdev, 0);
 	if (host->irq < 0) {
@@ -3753,7 +4458,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		goto host_free;
 	}
 
-	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO) && host->enable_async_irq) {
+	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO) && host->enable_async_irq) { /* SDIO */
 		/* Support for SDIO eint irq */
 		host->pins_eint = pinctrl_lookup_state(host->pinctrl, "state_eint");
 		if (IS_ERR(host->pins_eint)) {
@@ -3772,7 +4477,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO) && !host->sdio_eint_ready)
+	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO) && !host->sdio_eint_ready) /* SDIO */
 		dev_info(&pdev->dev, "%s: skip SDIO CCCR Async-IRQ\n",
 				mmc_hostname(mmc));
 
@@ -3802,8 +4507,10 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		mmc->caps2 |= MMC_CAP2_SDIO_IRQ_NOTHREAD;
 
 	mmc->caps |= MMC_CAP_CMD23;
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 	if (host->cqhci)
 		mmc->caps2 |= MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD;
+#endif
 	/* MMC core transfer sizes tunable parameters */
 	mmc->max_segs = MAX_BD_NUM;
 	if (host->dev_comp->support_64g)
@@ -3842,6 +4549,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	}
 	msdc_init_hw(host);
 
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 	if (mmc->caps2 & MMC_CAP2_CQE) {
 		host->cq_host = devm_kzalloc(mmc->parent,
 					     sizeof(*host->cq_host),
@@ -3861,17 +4569,23 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		/* 0 size, means 65536 so we don't have to -1 here */
 		mmc->max_seg_size = 64 * 1024;
 	}
+#endif
 
 {
 	u32 cpu = 0;
-	if (of_property_read_u32(pdev->dev.of_node, "affinity-hint-cpu", &cpu) == 0)
-		ret = irq_set_affinity_hint(host->irq, get_cpu_mask(cpu));
-	else if (!(mmc->caps2 & MMC_CAP2_NO_SDIO))
-		ret = irq_set_affinity_hint(host->irq, get_cpu_mask(2));
-	else
-		ret = irq_set_affinity_hint(host->irq, get_cpu_mask(3));
+	if (of_property_read_u32(pdev->dev.of_node, "affinity-hint-cpu", &cpu) != 0) {
+		if (!(mmc->caps2 & MMC_CAP2_NO_SDIO)) /* SDIO */
+			cpu = 2;
+		else /* not SDIO */
+			cpu = 3;
+	}
+	ret = irq_set_affinity_hint(host->irq, get_cpu_mask(cpu));
 	if (ret)
-		dev_warn(&pdev->dev, "set irq affinity hint err %d\n", ret);
+		dev_warn(&pdev->dev, "set irq affinity hint cpu#%u err %d\n", cpu, ret);
+	else {
+		dev_dbg(&pdev->dev, "set irq affinity hint: cpu#%u\n", cpu);
+		host->affinity_hint_cpu = cpu;
+	}
 }
 	ret = devm_request_irq(&pdev->dev, host->irq, msdc_irq,
 			       IRQF_TRIGGER_NONE, pdev->name, host);
@@ -3897,18 +4611,52 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		pinctrl_select_state(host->pinctrl, host->pins_dat1);
 #endif
 
-		device_init_wakeup(&pdev->dev, true);
+		ret = device_init_wakeup(&pdev->dev, true);
+		if (ret)
+			dev_err(&pdev->dev, "Failed to init device wakeup: %d\n", ret);
+#if 0 /* Don't set MMC_CAP_CD_WAKE */
+	} else if (!(mmc->caps2 & MMC_CAP2_NO_SD) && !host->internal_cd &&
+			mmc_card_is_removable(mmc) && mmc_can_gpio_cd(mmc)) { /* SD Card */
+		ret = device_init_wakeup(&pdev->dev, true);
+		if (ret)
+			dev_err(&pdev->dev, "Failed to init device wakeup: %d\n", ret);
+		else
+			mmc->caps |= MMC_CAP_CD_WAKE;
+#endif
 	}
 
 #ifdef ICOM_MTK_MMC_DVFSRC_VCORE
-	if (host->req_vcore && host->dvfsrc_vcore_power) {
+	if (host->dvfsrc_vcore_power) {
 		ret = regulator_set_voltage(host->dvfsrc_vcore_power,
 				host->req_vcore, INT_MAX);
 		if (ret)
-			dev_err(&pdev->dev, "%s: set vcore to %u err %d\n", __func__,
+			dev_err(&pdev->dev, "%s: set vcore to %d err %d\n", __func__,
 				host->req_vcore, ret);
 		else
-			dev_info(&pdev->dev, "requested vcore %u\n", host->req_vcore);
+			dev_alert(&pdev->dev, "%s: requested vcore %d\n",
+				mmc_hostname(mmc), host->req_vcore);
+	}
+#endif
+
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+	if (host->cpu_latency_req >= 0) {
+		if (host->use_affinity_hint_cpu_latency && host->affinity_hint_cpu < CONFIG_NR_CPUS)
+			host->cpu_dev = get_cpu_device(host->affinity_hint_cpu);
+		else
+			host->cpu_dev = NULL;
+		if (host->cpu_dev) {
+			/* it's okay to apply PM_QOS_RESUME_LATENCY_NO_CONSTRAINT here */
+			dev_pm_qos_update_request(host->cpu_dev->power.qos->resume_latency_req,
+				PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+			dev_alert(&pdev->dev, "%s: affinity-hint cpu#%u latency request: %d\n",
+					mmc_hostname(mmc), host->affinity_hint_cpu, host->cpu_latency_req);
+		} else {
+			/* it's okay to apply PM_QOS_DEFAULT_VALUE here */
+			cpu_latency_qos_add_request(&host->pm_qos_req, PM_QOS_DEFAULT_VALUE);
+			//cpu_latency_qos_add_request(&host->pm_qos_req, host->cpu_latency_req);
+			dev_alert(&pdev->dev, "%s: global cpu latency request: %d\n",
+					mmc_hostname(mmc), host->cpu_latency_req);
+		}
 	}
 #endif
 
@@ -3925,18 +4673,22 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(&pdev->dev, "create sysfs err %d\n", ret);
 
-	dev_info(&pdev->dev, "probed\n");
+	dev_alert(&pdev->dev, "probed\n");
 
 	return 0;
 end:
 #ifdef ICOM_MTK_MMC_DVFSRC_VCORE
-	if (host->req_vcore && host->dvfsrc_vcore_power) {
+	if (host->dvfsrc_vcore_power) {
 		ret = regulator_set_voltage(host->dvfsrc_vcore_power, 0, INT_MAX);
 		if (ret)
 			dev_err(&pdev->dev, "%s: release vcore err %d\n", __func__, ret);
 	}
 #endif
 	pm_runtime_disable(host->dev);
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+	if (host->cpu_latency_req >= 0 && !host->cpu_dev)
+		cpu_latency_qos_remove_request(&host->pm_qos_req);
+#endif
 release:
 	irq_set_affinity_hint(host->irq, NULL);
 	platform_set_drvdata(pdev, NULL);
@@ -3979,8 +4731,12 @@ static int msdc_drv_remove(struct platform_device *pdev)
 	pm_runtime_disable(host->dev);
 	pm_runtime_put_noidle(host->dev);
 #ifdef ICOM_MTK_MMC_DVFSRC_VCORE
-	if (host->req_vcore && host->dvfsrc_vcore_power)
+	if (host->dvfsrc_vcore_power)
 		regulator_set_voltage(host->dvfsrc_vcore_power, 0, INT_MAX);
+#endif
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+	if (host->cpu_latency_req >= 0 && !host->cpu_dev)
+		cpu_latency_qos_remove_request(&host->pm_qos_req);
 #endif
 	dma_free_coherent(&pdev->dev,
 			2 * sizeof(struct mt_gpdma_desc),
@@ -4056,9 +4812,12 @@ static int __maybe_unused msdc_runtime_suspend(struct device *dev)
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct msdc_host *host = mmc_priv(mmc);
 	unsigned long flags;
-	int ret;
 
+	dev_dbg(dev, "%s: %s\n", mmc_hostname(mmc), __func__);
+
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 	if (mmc->caps2 & MMC_CAP2_CQE) {
+		int ret;
 		u32 val;
 
 		if (mmc->cqe_on)
@@ -4070,6 +4829,7 @@ static int __maybe_unused msdc_runtime_suspend(struct device *dev)
 		val = readl(host->base + MSDC_INT);
 		writel(val, host->base + MSDC_INT);
 	}
+#endif
 
 	msdc_save_reg(host);
 
@@ -4077,7 +4837,7 @@ static int __maybe_unused msdc_runtime_suspend(struct device *dev)
 		disable_irq(host->irq);
 		pinctrl_select_state(host->pinctrl, host->pins_eint);
 		spin_lock_irqsave(&host->lock, flags);
-		//dev_info(dev, "msdc_runtime_suspend: sdio_irq_cnt=%d\n", host->sdio_irq_cnt);
+		//dev_alert(dev, "msdc_runtime_suspend: sdio_irq_cnt=%d\n", host->sdio_irq_cnt);
 		if (host->sdio_irq_cnt == 0) {
 			enable_irq(host->eint_irq);
 			enable_irq_wake(host->eint_irq);
@@ -4091,13 +4851,27 @@ static int __maybe_unused msdc_runtime_suspend(struct device *dev)
 	msdc_gate_clock(host);
 
 #ifdef ICOM_MTK_MMC_DVFSRC_VCORE
-	if (host->req_vcore && host->dvfsrc_vcore_power) {
-		/* To review ICOM_MTK_MMC_DONT_USE_NOIRQ_PM if host->req_vcore is defined */
-		ret = regulator_set_voltage(host->dvfsrc_vcore_power, 0, INT_MAX);
+	if (host->dvfsrc_vcore_power) {
+		int ret = regulator_set_voltage(host->dvfsrc_vcore_power, 0, INT_MAX);
 		if (ret)
 			dev_err(dev, "%s: release vcore err %d\n", __func__, ret);
 	}
 #endif
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+	if (host->cpu_latency_req >= 0) {
+		if (host->cpu_dev)
+			dev_pm_qos_update_request(host->cpu_dev->power.qos->resume_latency_req,
+				PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		else
+			cpu_latency_qos_update_request(&host->pm_qos_req, PM_QOS_DEFAULT_VALUE);
+	}
+#endif
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SD)/* && mmc->ios.power_mode == MMC_POWER_ON*/) /* SD Card */
+		if (host->pins_poweroff) {
+			dev_dbg(dev, "%s: pins-power-off\n", mmc_hostname(mmc));
+			pinctrl_select_state(host->pinctrl, host->pins_poweroff);
+		}
 
 	return 0;
 }
@@ -4109,13 +4883,33 @@ static int __maybe_unused msdc_runtime_resume(struct device *dev)
 	unsigned long flags;
 	int ret;
 
+	dev_dbg(dev, "%s: %s\n", mmc_hostname(mmc), __func__);
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SD) && mmc->ios.power_mode == MMC_POWER_ON) { /* SD Card */
+		if (host->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
+			dev_dbg(dev, "%s: MMC_SIGNAL_VOLTAGE_180 & pins-uhs\n", mmc_hostname(mmc));
+			pinctrl_select_state(host->pinctrl, host->pins_uhs);
+		} else if (host->signal_voltage == MMC_SIGNAL_VOLTAGE_330) {
+			dev_dbg(dev, "%s: MMC_SIGNAL_VOLTAGE_330 & pins-normal\n", mmc_hostname(mmc));
+			pinctrl_select_state(host->pinctrl, host->pins_normal);
+		}
+	}
+
+#ifdef ICOM_MTK_MMC_CPU_LATENCY_REQUEST
+	if (host->cpu_latency_req >= 0) {
+		if (host->cpu_dev)
+			dev_pm_qos_update_request(host->cpu_dev->power.qos->resume_latency_req,
+				host->cpu_latency_req);
+		else
+			cpu_latency_qos_update_request(&host->pm_qos_req, host->cpu_latency_req);
+	}
+#endif
 #ifdef ICOM_MTK_MMC_DVFSRC_VCORE
-	if (host->req_vcore && host->dvfsrc_vcore_power) {
-		/* To review ICOM_MTK_MMC_DONT_USE_NOIRQ_PM if host->req_vcore is defined */
+	if (host->dvfsrc_vcore_power) {
 		ret = regulator_set_voltage(host->dvfsrc_vcore_power,
 				host->req_vcore, INT_MAX);
 		if (ret)
-			dev_err(dev, "%s: set vcore to %u err %d\n", __func__,
+			dev_err(dev, "%s: set vcore to %d err %d\n", __func__,
 				host->req_vcore, ret);
 	}
 #endif
@@ -4130,7 +4924,7 @@ static int __maybe_unused msdc_runtime_resume(struct device *dev)
 
 	if (host->sdio_eint_ready && sdio_irq_claimed(mmc)) {
 		spin_lock_irqsave(&host->lock, flags);
-		//dev_info(dev, "msdc_runtime_resume: sdio_irq_cnt=%d\n", host->sdio_irq_cnt);
+		//dev_alert(dev, "msdc_runtime_resume: sdio_irq_cnt=%d\n", host->sdio_irq_cnt);
 		if (host->sdio_irq_cnt > 0) {
 			disable_irq_nosync(host->eint_irq);
 			disable_irq_wake(host->eint_irq);
@@ -4148,23 +4942,25 @@ static int __maybe_unused msdc_runtime_resume(struct device *dev)
 		enable_irq(host->irq);
 	}
 
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 	if (mmc->caps2 & MMC_CAP2_CQE)
 		cqhci_resume(mmc);
+#endif
 
 	return 0;
 }
 
-#ifdef ICOM_MTK_MMC_DONT_USE_NOIRQ_PM
 static int __maybe_unused msdc_suspend(struct device *dev)
-#else
-static int __maybe_unused msdc_suspend_noirq(struct device *dev)
-#endif
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
-	int ret;
+	//struct msdc_host *host = mmc_priv(mmc);
 
+	dev_dbg(dev, "%s: %s\n", mmc_hostname(mmc), __func__);
+
+#if IS_ENABLED(CONFIG_MMC_CQHCI)
 	if (mmc->caps2 & MMC_CAP2_CQE) {
 		struct msdc_host *host = mmc_priv(mmc);
+		int ret;
 		u32 val;
 
 		if (mmc->cqe_on)
@@ -4176,25 +4972,68 @@ static int __maybe_unused msdc_suspend_noirq(struct device *dev)
 		val = readl(host->base + MSDC_INT);
 		writel(val, host->base + MSDC_INT);
 	}
+#endif
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO)) /* SDIO */
+		return 0;
 
 	return pm_runtime_force_suspend(dev);
 }
 
-#ifdef ICOM_MTK_MMC_DONT_USE_NOIRQ_PM
-static int __maybe_unused msdc_resume(struct device *dev)
-#else
-static int __maybe_unused msdc_resume_noirq(struct device *dev)
-#endif
+static int __maybe_unused msdc_suspend_noirq(struct device *dev)
 {
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+	//struct msdc_host *host = mmc_priv(mmc);
+
+	dev_dbg(dev, "%s: %s\n", mmc_hostname(mmc), __func__);
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO)) /* SDIO */
+		return pm_runtime_force_suspend(dev);
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SD) && (mmc->caps & MMC_CAP_CD_WAKE)) { /* SD Card */
+		dev_dbg(dev, "%s: %s: GPIO set cd wake enable\n",
+				__func__, mmc_hostname(mmc));
+		mmc_gpio_set_cd_wake(mmc, true);
+	}
+
+	return 0;
+}
+
+static int __maybe_unused msdc_resume_noirq(struct device *dev)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+	//struct msdc_host *host = mmc_priv(mmc);
+
+	dev_dbg(dev, "%s: %s\n", mmc_hostname(mmc), __func__);
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO)) /* SDIO */
+		return pm_runtime_force_resume(dev);
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SD) && (mmc->caps & MMC_CAP_CD_WAKE)) { /* SD Card */
+		dev_dbg(dev, "%s: %s: GPIO set cd wake disable\n",
+				__func__, mmc_hostname(mmc));
+		mmc_gpio_set_cd_wake(mmc, false);
+	}
+
+	return 0;
+}
+
+static int __maybe_unused msdc_resume(struct device *dev)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+	//struct msdc_host *host = mmc_priv(mmc);
+
+	dev_dbg(dev, "%s: %s\n", mmc_hostname(mmc), __func__);
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO)) /* SDIO */
+		return 0;
+
 	return pm_runtime_force_resume(dev);
 }
 
 static const struct dev_pm_ops msdc_dev_pm_ops = {
-#ifdef ICOM_MTK_MMC_DONT_USE_NOIRQ_PM
 	SET_SYSTEM_SLEEP_PM_OPS(msdc_suspend, msdc_resume)
-#else
 	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(msdc_suspend_noirq, msdc_resume_noirq)
-#endif
 	SET_RUNTIME_PM_OPS(msdc_runtime_suspend, msdc_runtime_resume, NULL)
 };
 

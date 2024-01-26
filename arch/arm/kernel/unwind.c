@@ -184,6 +184,23 @@ static const struct unwind_idx *unwind_find_idx(unsigned long addr)
 		idx = search_index(addr, __start_unwind_idx,
 				   __origin_unwind_idx,
 				   __stop_unwind_idx);
+#if IS_ENABLED(CONFIG_MTK_FIX_UNWIND_SPINLOCK_RECURSION)
+	} else if (unwind_lock.owner_cpu == raw_smp_processor_id() && raw_spin_is_locked(&unwind_lock)) {
+		/* module unwind tables */
+		struct unwind_table *table;
+
+		list_for_each_entry(table, &unwind_tables, list) {
+			if (addr >= table->begin_addr &&
+			    addr < table->end_addr) {
+				idx = search_index(addr, table->start,
+						   table->origin,
+						   table->stop);
+				/* Move-to-front to exploit common traces */
+				list_move(&table->list, &unwind_tables);
+				break;
+			}
+		}
+#endif
 	} else {
 		/* module unwind tables */
 		struct unwind_table *table;

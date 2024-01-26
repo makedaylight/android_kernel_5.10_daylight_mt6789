@@ -48,6 +48,9 @@ struct bp_thl_priv {
 
 static struct bp_thl_priv *bp_thl_data;
 
+static struct power_supply *bp_psy;
+static struct delayed_work bp_psy_event_work;
+
 void register_bp_thl_notify(
 	battery_percent_callback bp_cb,
 	BATTERY_PERCENT_PRIO prio_val)
@@ -248,6 +251,7 @@ int bp_notify_handler(void *unused)
 	return 0;
 }
 
+#if 0
 int bp_psy_event(struct notifier_block *nb, unsigned long event, void *v)
 {
 	struct power_supply *psy = v;
@@ -304,6 +308,74 @@ int bp_psy_event(struct notifier_block *nb, unsigned long event, void *v)
 
 	return NOTIFY_DONE;
 }
+#else
+static void bp_psy_event_func(struct work_struct *work)
+{
+	struct power_supply *psy = bp_psy;
+	union power_supply_propval val;
+	int ret, uisoc, bat_status;
+
+	if (psy == NULL || strcmp(psy->desc->name, "battery") != 0)
+		return;
+
+	ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_CAPACITY, &val);
+	if (ret)
+		return;
+
+	uisoc = val.intval;
+
+	ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS, &val);
+	if (ret)
+		return;
+
+	bat_status = val.intval;
+
+	if ((bat_status != POWER_SUPPLY_STATUS_CHARGING && bat_status != -1) &&
+		(bp_thl_data->bp_thl_lv == BATTERY_PERCENT_LEVEL_0) &&
+		(uisoc <= bp_thl_data->soc_limit && uisoc >= 0)) {
+		bp_thl_data->bp_thl_lv = BATTERY_PERCENT_LEVEL_1;
+		bp_notify_flag = true;
+		pr_info("bp_notify called, l=%d s=%d soc=%d\n", bp_thl_data->bp_thl_lv,
+			bat_status, uisoc);
+	} else if (((bat_status == POWER_SUPPLY_STATUS_CHARGING) ||
+		(uisoc > bp_thl_data->soc_limit)) &&
+		(bp_thl_data->bp_thl_lv == BATTERY_PERCENT_LEVEL_1)) {
+		bp_thl_data->bp_thl_lv = BATTERY_PERCENT_LEVEL_0;
+		bp_notify_flag = true;
+		pr_info("bp_notify called, l=%d s=%d soc=%d\n", bp_thl_data->bp_thl_lv,
+			bat_status, uisoc);
+	}
+
+	if ((bat_status != -1) && (bp_thl_data->bp_thl_lv_ext == BATTERY_PERCENT_LEVEL_0) &&
+		(uisoc <= bp_thl_data->soc_limit_ext && uisoc > 0)) {
+		bp_thl_data->bp_thl_lv_ext = BATTERY_PERCENT_LEVEL_1;
+		bp_notify_flag_ext = true;
+		pr_info("bp_notify_ext called, l=%d s=%d soc=%d\n", bp_thl_data->bp_thl_lv_ext,
+			bat_status, uisoc);
+	} else if ((uisoc >= bp_thl_data->soc_limit_ext_release) &&
+		(bp_thl_data->bp_thl_lv_ext == BATTERY_PERCENT_LEVEL_1)) {
+		bp_thl_data->bp_thl_lv_ext = BATTERY_PERCENT_LEVEL_0;
+		bp_notify_flag_ext = true;
+		pr_info("bp_notify_ext called, l=%d s=%d soc=%d\n",
+			bp_thl_data->bp_thl_lv_ext, bat_status, uisoc);
+	}
+
+	if (bp_notify_flag_ext || bp_notify_flag)
+		wake_up_interruptible(&bp_notify_waiter);
+
+	return;
+}
+
+static int bp_psy_event(struct notifier_block *nb, unsigned long event, void *v)
+{
+	struct power_supply *psy = v;
+
+	if (event == PSY_EVENT_PROP_CHANGED && strcmp(psy->desc->name, "battery") == 0)
+		schedule_delayed_work(&bp_psy_event_work, 0);
+
+	return NOTIFY_DONE;
+}
+#endif
 
 static int bp_thl_probe(struct platform_device *pdev)
 {
@@ -345,6 +417,14 @@ static int bp_thl_probe(struct platform_device *pdev)
 		pr_notice("Failed to create bp_notify_thread\n");
 		return PTR_ERR(bp_notify_thread);
 	}
+
+	bp_psy = devm_power_supply_get_by_phandle(&pdev->dev, "gauge");
+	if (IS_ERR_OR_NULL(bp_psy)) {
+		pr_warn("%s Couldn't get bp_psy\n", __func__);
+		bp_psy = NULL;
+	}
+
+	INIT_DELAYED_WORK(&bp_psy_event_work, bp_psy_event_func);
 
 	bp_nb.notifier_call = bp_psy_event;
 	ret = power_supply_reg_notifier(&bp_nb);

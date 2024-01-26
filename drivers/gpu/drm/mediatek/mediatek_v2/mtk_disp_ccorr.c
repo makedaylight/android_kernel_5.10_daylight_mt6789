@@ -614,6 +614,12 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 			comp->regs + CCORR_REG(3));
 		writel(((ccorr->coef[2][2] & CCORR_13BIT_MASK) << 16),
 			comp->regs + CCORR_REG(4));
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+		/* Disable Ccorr Offset */
+		writel(0x0, comp->regs + DISP_REG_CCORR_COLOR_OFFSET_0);
+		writel(0x0, comp->regs + DISP_REG_CCORR_COLOR_OFFSET_1);
+		writel(0x0, comp->regs + DISP_REG_CCORR_COLOR_OFFSET_2);
+#else
 		/* Ccorr Offset */
 		writel(((ccorr->offset[0] & CCORR_COLOR_OFFSET_MASK) |
 			(0x1 << 31)),
@@ -622,6 +628,7 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 			comp->regs + DISP_REG_CCORR_COLOR_OFFSET_1);
 		writel(((ccorr->offset[2] & CCORR_COLOR_OFFSET_MASK)),
 			comp->regs + DISP_REG_CCORR_COLOR_OFFSET_2);
+#endif
 
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
 		pr_info("DISP-CCORR: %s: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
@@ -665,6 +672,18 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 		cmdq_pkt_write(handle, comp->cmdq_base,
 			comp->regs_pa + CCORR_REG(4),
 			((ccorr->coef[2][2] & CCORR_13BIT_MASK) << 16), ~0);
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+		/* Disable Ccorr Offset */
+		cmdq_pkt_write(handle, comp->cmdq_base,
+			comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_0,
+			0x0, ~0);
+		cmdq_pkt_write(handle, comp->cmdq_base,
+			comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_1,
+			0x0, ~0);
+		cmdq_pkt_write(handle, comp->cmdq_base,
+			comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_2,
+			0x0, ~0);
+#else
 		/* Ccorr Offset */
 		cmdq_pkt_write(handle, comp->cmdq_base,
 			comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_0,
@@ -676,6 +695,7 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 		cmdq_pkt_write(handle, comp->cmdq_base,
 			comp->regs_pa + DISP_REG_CCORR_COLOR_OFFSET_2,
 			(ccorr->offset[2] & CCORR_COLOR_OFFSET_MASK), ~0);
+#endif
 
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE_DEBUG
 		pr_info("DISP-CCORR: %s: DISP_REG_CCORR_EN=0x%08x\n", __func__, readl(comp->regs + DISP_REG_CCORR_EN));
@@ -695,6 +715,11 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 			(ccorr->coef[2][1] & CCORR_13BIT_MASK));
 		pr_info("DISP-CCORR: [Q] CCORR_REG(4)=0x%08x\n",
 			((ccorr->coef[2][2] & CCORR_13BIT_MASK) << 16));
+#ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
+		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_COLOR_OFFSET_0=0x0\n");
+		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_COLOR_OFFSET_1=0x0\n");
+		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_COLOR_OFFSET_2=0x0\n");
+#else
 		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_COLOR_OFFSET_0=0x%08x\n",
 			(ccorr->offset[0] & CCORR_COLOR_OFFSET_MASK) |
 			(0x1 << 31));
@@ -702,6 +727,7 @@ static int disp_ccorr_write_coef_reg(struct mtk_ddp_comp *comp,
 			(ccorr->offset[1] & CCORR_COLOR_OFFSET_MASK));
 		pr_info("DISP-CCORR: [Q] DISP_REG_CCORR_COLOR_OFFSET_2=0x%08x\n",
 			(ccorr->offset[2] & CCORR_COLOR_OFFSET_MASK));
+#endif
 #endif
 	}
 

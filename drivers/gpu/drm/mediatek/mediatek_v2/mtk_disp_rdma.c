@@ -386,8 +386,8 @@ static irqreturn_t mtk_disp_rdma_irq_handler(int irq, void *dev_id)
 			unsigned int crtc_idx = drm_crtc_index(crtc);
 			unsigned int pf_idx;
 
+			cur_time = ktime_get();
 			if (rdma->id == DDP_COMPONENT_RDMA0) {
-				cur_time = ktime_get();
 				DRM_MMP_EVENT_START(rdma0, val, 0);
 			}
 			DDPIRQ("[IRQ] %s: frame start!\n", mtk_dump_comp_str(rdma));

@@ -565,6 +565,7 @@ static void msdc_set_data_timeout(struct msdc_host *host, u64 timeout_ns)
 	struct mmc_host *mmc = mmc_from_priv(host);
 	u64 count;
 
+	host->data_timeout_ns = timeout_ns;
 	host->timeout_ns = timeout_ns;
 	host->timeout_clks = 0;
 
@@ -594,7 +595,7 @@ static void msdc_set_data_timeout(struct msdc_host *host, u64 timeout_ns)
 	}
 
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_DEBUG
-	dev_info(host->dev, "set data timeout: %llu us (%u)\n", timeout_ns / 1000, (u32)count);
+	dev_info(host->dev, "set data timeout: %llu us (%u)\n", timeout_ns / NSEC_PER_USEC, (u32)count);
 #endif
 
 	/* read data timeout */
@@ -1169,14 +1170,14 @@ static bool msdc_cmd_done(struct msdc_host *host, int events,
 		cmd->opcode != MMC_SEND_TUNING_BLOCK &&
 		cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200)
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
-		dev_info(host->dev,
-				"%s: cmd=%d arg=%08X; rsp %08X; cmd_error=%d; events=%08x; dto_ns=%llu\n",
-				__func__, cmd->opcode, cmd->arg, rsp[0],
-				cmd->error, events, host->data_timeout_ns);
+			dev_err(host->dev,
+				"%s: cmd=%d arg=0x%x flag=0x%x; rsp=0x%x; cmd_error=%d; events=0x%x; dto_ms=%llu\n",
+				__func__, cmd->opcode, cmd->arg, cmd->flags, rsp[0],
+				cmd->error, events, host->data_timeout_ns / NSEC_PER_MSEC);
 #else
-		dev_info(host->dev,
-				"%s: cmd=%d arg=%08X; rsp %08X; cmd_error=%d; events=%08x\n",
-				__func__, cmd->opcode, cmd->arg, rsp[0],
+			dev_err(host->dev,
+				"%s: cmd=%d arg=0x%x flag=0x%x; rsp=0x%x; cmd_error=%d; events=0x%x\n",
+				__func__, cmd->opcode, cmd->arg, cmd->flags, rsp[0],
 				cmd->error, events);
 #endif
 
@@ -1278,23 +1279,23 @@ static u64 msdc_target_timeout(struct msdc_host *host,
 		 struct mmc_command *cmd, struct mmc_data *data)
 {
 	//struct mmc_host *mmc = mmc_from_priv(host);
-	u64 target_timeout;
+	u64 target_timeout; /* us */
 
 	/* timeout in us */
 	if (!data) {
 		if (!cmd)
 			target_timeout = host->max_busy_timeout_us;
 		else if (cmd->busy_timeout)
-			target_timeout = 1000ULL * cmd->busy_timeout;
+			target_timeout = 1000ULL * cmd->busy_timeout; /* ms -> us */
 		else if (cmd->flags & MMC_RSP_BUSY)
 			target_timeout = host->max_busy_timeout_us;
 		else
-			target_timeout = 500000ULL; /* 500ms */
+			target_timeout = 500000ULL; /* 500ms -> us */
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
 		dev_info(host->dev, "target cmd timeout: %llu us\n", target_timeout);
 #endif
 	} else {
-		target_timeout = DIV_ROUND_UP(data->timeout_ns, 1000);
+		target_timeout = DIV_ROUND_UP(data->timeout_ns, 1000); /* ns -> us */
 		/* Refer to mmc_set_data_timeout() */
 		if (host->mclk && data->timeout_clks) {
 			u64 val;
@@ -1309,7 +1310,7 @@ static u64 msdc_target_timeout(struct msdc_host *host,
 			target_timeout += val;
 		}
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VDEBUG
-		dev_info(host->dev, "target data timeout: %llu us (#=%u)\n", target_timeout, data->blocks);
+		dev_info(host->dev, "target data timeout: %llu us (nr=%u)\n", target_timeout, data->blocks);
 #endif
 	}
 
@@ -1317,11 +1318,12 @@ static u64 msdc_target_timeout(struct msdc_host *host,
 }
 
 /* Refer to sdhci_calc_timeout() & sdhci_calc_sw_timeout() */
-static void msdc_calc_timeout(struct msdc_host *host,
+static u64 msdc_calc_timeout(struct msdc_host *host,
 		struct mmc_command *cmd)
 {
 	struct mmc_data *data = cmd->data;
 	u64 target_timeout;
+	u64 data_timeout_ns;
 
 	target_timeout = msdc_target_timeout(host, cmd, data); /* us */
 	target_timeout *= NSEC_PER_USEC; /* ns */
@@ -1340,33 +1342,38 @@ static void msdc_calc_timeout(struct msdc_host *host,
 		transfer_time = transfer_time * 2;
 
 		/* calculate timeout for the entire data */
-		host->data_timeout_ns = target_timeout * data->blocks +
+		data_timeout_ns = target_timeout * data->blocks +
 				     transfer_time;
 
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
-		dev_info(host->dev, "calc data timeout: %u us (nr=%u) (transfer: %u ns)\n",
-				host->data_timeout_ns / 1000, data->blocks, transfer_time);
+		dev_info(host->dev, "calc data timeout: %u us (nr=%u) transfer: %u ns (blksz=%u)\n",
+				data_timeout_ns / NSEC_PER_USEC, data->blocks, transfer_time, blksz);
 #endif
 #else
 		/* add more time below to skip transfer_time calculation */
 		/* calculate timeout for the entire data */
-		host->data_timeout_ns = target_timeout * data->blocks;
+		data_timeout_ns = target_timeout * data->blocks + (20 * NSEC_PER_MSEC)/*20ms*/;
 
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
-		dev_info(host->dev, "data timeout: %u us (#=%u)\n",
-				host->data_timeout_ns / 1000, data->blocks);
+		dev_info(host->dev, "calc data timeout: %u us (nr=%u)\n",
+				data_timeout_ns / NSEC_PER_USEC, data->blocks);
 #endif
 #endif
 	} else {
-		host->data_timeout_ns = target_timeout;
+		data_timeout_ns = target_timeout;
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT_VVDEBUG
 		dev_info(host->dev, "calc cmd data timeout: %u us\n",
-				host->data_timeout_ns / 1000);
+				data_timeout_ns / NSEC_PER_USEC);
 #endif
 	}
 
-	if (host->data_timeout_ns)
-		host->data_timeout_ns += (500 * NSEC_PER_MSEC); /* more time */
+	if (data_timeout_ns) {
+		data_timeout_ns += (100ULL * NSEC_PER_MSEC); /* more time: >=MMC_CMD_TRANSFER_TIME */
+		if (data_timeout_ns < (500ULL * NSEC_PER_MSEC))
+			data_timeout_ns = 500ULL * NSEC_PER_MSEC;
+	}
+
+	return data_timeout_ns;
 }
 #endif
 
@@ -1401,10 +1408,9 @@ static void msdc_start_command(struct msdc_host *host,
 
 	spin_lock_irqsave(&host->lock, flags);
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
-	data_timeout_ns = host->data_timeout_ns;
-	msdc_calc_timeout(host, cmd);
+	data_timeout_ns = msdc_calc_timeout(host, cmd);
 	if (data_timeout_ns != host->data_timeout_ns)
-		msdc_set_data_timeout(host, host->data_timeout_ns);
+		msdc_set_data_timeout(host, data_timeout_ns);
 
 	if (host->data_timeout_ns)
 		sw_timeout_jiffies = nsecs_to_jiffies(host->data_timeout_ns) + HZ;
@@ -1755,23 +1761,23 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 			    mrq->cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200) {
 				if (mrq && mrq->cmd)
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
-					dev_info(host->dev, "%s: cmd=%d flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_us=%llu",
-							__func__, mrq->cmd->opcode, data->flags, data->blocks,
-							data->error, data->bytes_xfered, host->data_timeout_ns / 1000);
+					dev_err(host->dev, "%s: cmd=%d data_flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_ms=%llu",
+						__func__, mrq->cmd->opcode, data->flags, data->blocks,
+						data->error, data->bytes_xfered, host->data_timeout_ns / NSEC_PER_MSEC);
 #else
-					dev_info(host->dev, "%s: cmd=%d flags=0x%x blocks=%u data_error=%d xfer_size=%d",
-							__func__, mrq->cmd->opcode, data->flags, data->blocks,
-							data->error, data->bytes_xfered);
+					dev_err(host->dev, "%s: cmd=%d data_flags=0x%x blocks=%u data_error=%d xfer_size=%d",
+						__func__, mrq->cmd->opcode, data->flags, data->blocks,
+						data->error, data->bytes_xfered);
 #endif
 				else
 #ifdef ICOM_MTK_MMC_NEW_TIMEOUT
-					dev_info(host->dev, "%s: flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_us=%llu",
-							__func__, data->flags, data->blocks,
-							data->error, data->bytes_xfered, host->data_timeout_ns / 1000);
+					dev_err(host->dev, "%s: data_flags=0x%x blocks=%u data_error=%d xfer_size=%d dto_ms=%llu",
+						__func__, data->flags, data->blocks,
+						data->error, data->bytes_xfered, host->data_timeout_ns / NSEC_PER_MSEC);
 #else
-					dev_info(host->dev, "%s: flags=0x%x blocks=%u data_error=%d xfer_size=%d",
-							__func__, data->flags, data->blocks,
-							data->error, data->bytes_xfered);
+					dev_err(host->dev, "%s: data_flags=0x%x blocks=%u data_error=%d xfer_size=%d",
+						__func__, data->flags, data->blocks,
+						data->error, data->bytes_xfered);
 #endif
 			}
 		}

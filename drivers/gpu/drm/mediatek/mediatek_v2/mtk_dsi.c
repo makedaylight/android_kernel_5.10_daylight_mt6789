@@ -1161,11 +1161,13 @@ static int mtk_dsi_set_LFR(struct mtk_dsi *dsi, struct mtk_ddp_comp *comp,
 	}
 
 #ifdef CONFIG_DRM_MTK_ICOM_SKIP_FRAME
+#if 0 // TBD: fps is out of sync between MTK LFR and LCM skip frame
 	if (dsi->ext && dsi->ext->params &&
 		dsi->ext->params->skip_frame_base_fps != 0) {
 		lfr_skip_num =
 			(dsi->ext->params->skip_frame_base_fps / refresh_rate) - 1;
 	}
+#endif
 #endif
 
 	if (lfr_dbg) {
@@ -9018,8 +9020,16 @@ static int mtk_dsi_io_cmd(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle,
 		panel_ext = mtk_dsi_get_panel_ext(comp);
 
 		if (panel_ext && panel_ext->params
-			&& panel_ext->params->vfp_low_power)
+			&& panel_ext->params->vfp_low_power) {
 			vfp_low_power = panel_ext->params->vfp_low_power;
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+			if (dsi->vm.vfront_porch >= vfp_low_power) {
+				/* If the current VFP is greater than or equal to the low-power VFP, bypass the low-power VFP */
+				DDPINFO("[VFP_IDLE]vfp_low_power=%d, keep curr vfront_porch=%d\n", vfp_low_power, dsi->vm.vfront_porch);
+				vfp_low_power = 0;
+			}
+#endif
+		}
 		if ((dsi->mipi_hopping_sta || (is_bdg_supported() && dsi->bdg_mipi_hopping_sta))
 			&& panel_ext && panel_ext->params && panel_ext->params->dyn.vfp_lp_dyn)
 			vfp_lp_dyn = panel_ext->params->dyn.vfp_lp_dyn;
@@ -9027,7 +9037,7 @@ static int mtk_dsi_io_cmd(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle,
 			vfp_lp_dyn = vfp_low_power;
 
 		if (vfp_low_power && vfp_lp_dyn) {
-			DDPINFO("vfp_low_power=%d,vfp_lp_dyn=%d\n", vfp_low_power, vfp_lp_dyn);
+			DDPINFO("[VFP_IDLE]vfp_low_power=%d,vfp_lp_dyn=%d\n", vfp_low_power, vfp_lp_dyn);
 			if (is_bdg_supported())
 				mtk_dsi_stop_vdo_mode(dsi, handle);
 			mtk_dsi_porch_setting(comp, handle, DSI_VFP,
@@ -9056,6 +9066,26 @@ static int mtk_dsi_io_cmd(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle,
 
 		panel_ext = mtk_dsi_get_panel_ext(comp);
 
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+		if (panel_ext && panel_ext->params
+			&& panel_ext->params->vfp_low_power) {
+			vfp_low_power = panel_ext->params->vfp_low_power;
+			if (dsi->vm.vfront_porch >= vfp_low_power) {
+				DDPINFO("[VFP_DEFAULT]keep curr vfront_porch=%d\n", dsi->vm.vfront_porch);
+				vfp_low_power = 0;
+			}
+		}
+		if ((dsi->mipi_hopping_sta || (is_bdg_supported() && dsi->bdg_mipi_hopping_sta))
+			&& panel_ext && panel_ext->params && panel_ext->params->dyn.vfp_lp_dyn)
+			vfp_lp_dyn = panel_ext->params->dyn.vfp_lp_dyn;
+		else
+			vfp_lp_dyn = vfp_low_power;
+#endif
+
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+		if (vfp_low_power && vfp_lp_dyn) {
+#endif
+
 		vfront_porch = dsi->vm.vfront_porch;
 		if ((dsi->mipi_hopping_sta || (is_bdg_supported() && dsi->bdg_mipi_hopping_sta))
 			&& panel_ext && panel_ext->params
@@ -9082,7 +9112,7 @@ static int mtk_dsi_io_cmd(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle,
 			}
 		 }
 
-		DDPINFO("vfront_porch=%d,mod_vfront_porch=%d\n", vfront_porch, mod_vfront_porch);
+		DDPINFO("[VFP_DEFAULT]vfront_porch=%d,mod_vfront_porch=%d\n", vfront_porch, mod_vfront_porch);
 
 		if (panel_ext && panel_ext->params &&
 			panel_ext->params->wait_sof_before_dec_vfp) {
@@ -9104,6 +9134,10 @@ static int mtk_dsi_io_cmd(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle,
 			mtk_disp_mutex_trigger(comp->mtk_crtc->mutex[0], handle);
 			mtk_dsi_trigger(comp, handle);
 		}
+
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+		}
+#endif
 	}
 		break;
 	case DSI_GET_TIMING:

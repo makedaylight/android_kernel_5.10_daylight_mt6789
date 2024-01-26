@@ -192,7 +192,7 @@ static const struct aal_data mt6879_aal_data = {
 
 static const struct aal_data mt6895_aal0_data = {
 	.min_tile_width = 50,
-	.tile_width = 1300,
+	.tile_width = 1216,
 	.min_hist_width = 128,
 	.vcp_readback = true,
 	.gpr = {CMDQ_GPR_R08, CMDQ_GPR_R10},

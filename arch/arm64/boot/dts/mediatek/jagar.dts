@@ -4,6 +4,7 @@
  */
 /dts-v1/;
 /plugin/;
+#include <generated/autoconf.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/pinctrl/mt6789-pinfunc.h>
@@ -51,8 +52,8 @@ ROOT_NODE {
 		    loop.max_part=7";
 #else
 	/* REMOVED: initcall_debug=1 */
+	/* REMOVED: loglevel=8 => MOVED to LK2 */
 	bootargs = "console=tty0 root=/dev/ram \
-		    loglevel=8 \
 		    8250.nr_uarts=4 \
 		    androidboot.hardware=mt6789 \
 		    transparent_hugepage=never \
@@ -154,7 +155,7 @@ ROOT_NODE {
 
 		enable-post-delay = <20>; /* ms */
 		screen-on-backlight-off-pre-delay = <20>; /* ms */
-		screen-off-backlight-off-pre-delay = <20>; /* ms */
+		screen-off-backlight-off-pre-delay = <70>; /* ms (latency +1ms - +10ms) */
 		// disp-off-to-on-delay = <100>; /* ms */ /* total delay = enable-post-delay + disp-off-to-on-delay */
 		// disp-off-to-on-delay-timeout = <300>; /* ms */
 
@@ -173,14 +174,15 @@ ROOT_NODE {
 #else
 		control = <0x01>; /* I2C mode */
 #endif
-		time-ctrl = <0x1F>; /* Slope Time: 128ms, Smoothing: No, Fade IN/OUT: 64us */
-		time-ctrl-for-off = <0x17>; /* Backlight off: Slope Time: 8ms, Smoothing: No, Fade IN/OUT: 64us */
-		fade-off-min-hw-brightness = <240>; /* min. HW brightness threshold to wait for the fading off time */
+		time-ctrl = <0x1F>; /* Slope Time: 128ms, Smoothing: No, Fade IN/OUT: max. 64us */
+		time-ctrl-for-off = <0x17>; /* Backlight off: Slope Time: 8ms, Smoothing: No, Fade IN/OUT: max. 64us */
+		fade-off-min-hw-brightness = <1712>; /* min. HW brightness threshold to wait for the fading off time */
 		reg0x08 = <0x02>; /* Soft start time control: 128us */
 		reg0x09 = <0x79>; /* Enable PFM: 31.15KHz */
 
 		fbs = <1 1 0 1 0 0>;
 		//current = <0x82>; // 20mA(default)
+		current = <0x62>; // 16.16mA
 	};
 };
 
@@ -232,13 +234,22 @@ ROOT_NODE {
 		<&gce 4 0 CMDQ_THR_PRIO_4>,
 		<&gce 6 0 CMDQ_THR_PRIO_3>;
 
-	/* Disable MTK_DRM_OPT_IDLE_MGR and MTK_DRM_OPT_IDLEMGR_* */
 	helper-value = <0>, /*MTK_DRM_OPT_STAGE*/
 		<1>, /*MTK_DRM_OPT_USE_CMDQ*/
 		<1>, /*MTK_DRM_OPT_USE_M4U*/
 		<1>, /*MTK_DRM_OPT_MMQOS_SUPPORT*/
 		<1>, /*MTK_DRM_OPT_MMDVFS_SUPPORT*/
 		<0>, /*MTK_DRM_OPT_SODI_SUPPORT*/
+#ifdef CONFIG_DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
+		<1>, /*MTK_DRM_OPT_IDLE_MGR*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_SWTCH_DECOUPLE*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_BY_REPAINT*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_ENTER_ULPS*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_KEEP_LP11*/
+		<0>, /*MTK_DRM_OPT_DYNAMIC_RDMA_GOLDEN_SETTING*/
+		<0>, /*MTK_DRM_OPT_IDLEMGR_DISABLE_ROUTINE_IRQ*/
+#else
+		/* Disable MTK_DRM_OPT_IDLE_MGR and MTK_DRM_OPT_IDLEMGR_* */
 		<0>, /*MTK_DRM_OPT_IDLE_MGR*/
 		<0>, /*MTK_DRM_OPT_IDLEMGR_SWTCH_DECOUPLE*/
 		<0>, /*MTK_DRM_OPT_IDLEMGR_BY_REPAINT*/
@@ -246,6 +257,7 @@ ROOT_NODE {
 		<0>, /*MTK_DRM_OPT_IDLEMGR_KEEP_LP11*/
 		<0>, /*MTK_DRM_OPT_DYNAMIC_RDMA_GOLDEN_SETTING*/
 		<0>, /*MTK_DRM_OPT_IDLEMGR_DISABLE_ROUTINE_IRQ*/
+#endif
 		<0>, /*MTK_DRM_OPT_MET_LOG*/
 		<1>, /*MTK_DRM_OPT_USE_PQ*/
 		<1>, /*MTK_DRM_OPT_ESD_CHECK_RECOVERY*/
@@ -487,7 +499,7 @@ ROOT_NODE {
 
 		enable-post-delay = <20>; /* ms */
 		screen-on-backlight-off-pre-delay = <20>; /* ms */
-		screen-off-backlight-off-pre-delay = <20>; /* ms */
+		screen-off-backlight-off-pre-delay = <70>; /* ms (latency +1ms - +10ms) */
 		// disp-off-to-on-delay = <100>; /* ms */ /* total delay = enable-post-delay + disp-off-to-on-delay */
 		// disp-off-to-on-delay-timeout = <300>; /* ms */
 
@@ -506,14 +518,15 @@ ROOT_NODE {
 #else
 		control = <0x01>; /* I2C mode */
 #endif
-		time-ctrl = <0x1F>; /* Slope Time: 128ms, Smoothing: No, Fade IN/OUT: 64us */
-		time-ctrl-for-off = <0x17>; /* Backlight off: Slope Time: 8ms, Smoothing: No, Fade IN/OUT: 64us */
-		fade-off-min-hw-brightness = <240>; /* min. HW brightness threshold to wait for the fading off time */
+		time-ctrl = <0x1F>; /* Slope Time: 128ms, Smoothing: No, Fade IN/OUT: max. 64us */
+		time-ctrl-for-off = <0x17>; /* Backlight off: Slope Time: 8ms, Smoothing: No, Fade IN/OUT: max. 64us */
+		fade-off-min-hw-brightness = <1712>; /* min. HW brightness threshold to wait for the fading off time */
 		reg0x08 = <0x02>; /* Soft start time control: 128us */
 		reg0x09 = <0x79>; /* Enable PFM: 31.15KHz */
 
 		fbs = <1 1 0 1 0 0>;
-		//current = <0x78>; // 13.04mA
+		//current = <0x82>; // 20mA(default)
+		current = <0x62>; // 16.16mA
 	};
 };
 
@@ -660,7 +673,7 @@ ROOT_NODE {
 			bias-pull-up;
 		};
 	};
-	mmc0_pins_normal: mmc0@0 {
+	mmc0_pins_normal: mmc0@normal {
 		pins_cmd_dat {
 			pinmux = <PINMUX_GPIO58__FUNC_MSDC0_DAT0>,
 				<PINMUX_GPIO59__FUNC_MSDC0_DAT1>,
@@ -678,7 +691,7 @@ ROOT_NODE {
 			input-enable;
 		};
 	};
-	mmc0_pins_uhs: mmc0@1 {
+	mmc0_pins_uhs: mmc0@uhs {
 		pins_cmd_dat {
 			pinmux = <PINMUX_GPIO58__FUNC_MSDC0_DAT0>,
 				<PINMUX_GPIO59__FUNC_MSDC0_DAT1>,
@@ -696,20 +709,20 @@ ROOT_NODE {
 			input-enable;
 		};
 	};
-	mmc0_pins_pull_down: mmc0@2 {
+	mmc0_pins_pull_down: mmc0@pulldown {
 		pins_cmd_dat {
 			pinmux = <PINMUX_GPIO58__FUNC_MSDC0_DAT0>,
 				<PINMUX_GPIO59__FUNC_MSDC0_DAT1>,
 				<PINMUX_GPIO60__FUNC_MSDC0_DAT2>,
 				<PINMUX_GPIO61__FUNC_MSDC0_DAT3>,
 				<PINMUX_GPIO56__FUNC_MSDC0_CMD>;
-			drive-strength = <0>;
+			drive-strength = <3>;
 			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
 			input-enable;
 		};
 		pins_clk {
 			pinmux = <PINMUX_GPIO55__FUNC_MSDC0_CLK>;
-			drive-strength = <0>;
+			drive-strength = <3>;
 			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
 		};
 	};
@@ -752,14 +765,22 @@ ROOT_NODE {
 &mmc0 {
 	host-index = <1>; /* 0:eMMC 1:SD */
 	status = "okay";
-	pinctrl-names = "default", "state_normal", "state_uhs", "pull_down";
+	compatible = "mediatek,mt8781-sd";
+	pinctrl-names = "default", "state_normal", "state_uhs", "power-off";
 	pinctrl-0 = <&mmc0_pins_default>;
 	pinctrl-1 = <&mmc0_pins_normal>;
 	pinctrl-2 = <&mmc0_pins_uhs>;
 	pinctrl-3 = <&mmc0_pins_pull_down>;
 	bus-width = <4>;
 	max-frequency = <200000000>;
-	ocr-voltage = <0x00030000>; /* MMC_VDD_28_29 + MMC_VDD_29_30 */
+#if 0
+	/* TODO: regulator-max-microvolt = <3000000>; => regulator-max-microvolt = <3300000>; */
+	//ocr-voltage = <0x00170000>; /* MMC_VDD_28_29 + MMC_VDD_29_30 + MMC_VDD_30_31 + MMC_VDD_32_33 */
+	voltage-ranges = <2800 2900 2900 3000 3000 3100 3200 3300>;
+#else
+	//ocr-voltage = <0x00030000>; /* MMC_VDD_28_29 + MMC_VDD_29_30 */
+	voltage-ranges = <2800 2900 2900 3000>;
+#endif
 
 	cap-sd-highspeed;
 	sd-uhs-sdr12;
@@ -782,6 +803,17 @@ ROOT_NODE {
 	dvfsrc-vcore-supply = <&dvfsrc_vcore>;
 	req-vcore = <650000>;
 
+	clk-auto-power-down;
+
+	vcore-supply = <&mt6358_vcore_reg>;
+
+	rising-delay-min-length = <12>;
+	each-delay-tuning-loop = <10>;
+
+	mediatek,ckgen-delay = <0>; /* CKGEN_MSDC_DLY_SEL: 0-31 */
+	//tuning-both-edges;
+
+	affinity-hint-cpu-latency-req = <0>; /* usecs */
 	affinity-hint-cpu = <1>;
 };
 /* Micro SD Card: end */
@@ -794,7 +826,7 @@ ROOT_NODE {
 			output-low;
 		};
 	};
-	mmc1_pins_normal: mmc1@0 {
+	mmc1_pins_normal: mmc1@normal {
 		pins_cmd_dat {
 			pinmux = <PINMUX_GPIO73__FUNC_MSDC1_DAT0>,
 				<PINMUX_GPIO74__FUNC_MSDC1_DAT1>,
@@ -811,7 +843,7 @@ ROOT_NODE {
 			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
 		};
 	};
-	mmc1_pins_uhs: mmc1@1 {
+	mmc1_pins_uhs: mmc1@uhs {
 		pins_cmd_dat {
 			pinmux = <PINMUX_GPIO73__FUNC_MSDC1_DAT0>,
 				<PINMUX_GPIO74__FUNC_MSDC1_DAT1>,
@@ -828,7 +860,7 @@ ROOT_NODE {
 			bias-pull-down = <MTK_PUPD_SET_R1R0_10>; /* 00:HiZ, 01:10KΩ, 10:50KΩ, 11:10KΩ/50KΩ */
 		};
 	};
-	mmc1_pins_eint: mmc1@2 {
+	mmc1_pins_eint: mmc1@eint {
 		pins_dat1 {
 			pinmux = <PINMUX_GPIO74__FUNC_GPIO74>;
 			drive-strength = <3>;
@@ -836,7 +868,7 @@ ROOT_NODE {
 			input-enable;
 		};
 	};
-	mmc1_pins_dat1: mmc1@3 {
+	mmc1_pins_dat1: mmc1@dat1 {
 		pins_dat1 {
 			pinmux = <PINMUX_GPIO74__FUNC_MSDC1_DAT1>;
 			drive-strength = <3>;
@@ -844,7 +876,7 @@ ROOT_NODE {
 			input-enable;
 		};
 	};
-	mmc1_pins_poweron: mmc1@4 {
+	mmc1_pins_poweron: mmc1@poweron {
 		pins_i2s1_0 {
 			pinmux = <PINMUX_GPIO50__FUNC_I2S1_DO>,
 				<PINMUX_GPIO51__FUNC_I2S1_BCK>,
@@ -859,7 +891,7 @@ ROOT_NODE {
 			input-enable;
 		};
 	};
-	mmc1_pins_poweroff: mmc1@5 {
+	mmc1_pins_poweroff: mmc1@poweroff {
 		pins_i2s1_0 {
 			pinmux = <PINMUX_GPIO50__FUNC_GPIO50>,
 				<PINMUX_GPIO51__FUNC_GPIO51>,
@@ -972,7 +1004,8 @@ ROOT_NODE {
 #else
 	max-frequency = <200000000>;
 #endif
-	ocr-voltage = <0x00030000>;
+	//ocr-voltage = <0x00300000>; /* MMC_VDD_32_33 + MMC_VDD_33_34 */
+	voltage-ranges = <3200 3300 3300 3400>;
 
 	cap-sd-highspeed;
 	sd-uhs-sdr104;
@@ -996,26 +1029,51 @@ ROOT_NODE {
 	/* The runtime autosuspend works if SDIO async IRQ is enabled. */
 	//autosuspend-delay = <50>; /* The default value is 50ms. */
 
-	dvfsrc-vcore-supply = <&dvfsrc_vcore>;
+	//dvfsrc-vcore-supply = <&dvfsrc_vcore>;
 	//req-vcore = <725000>;
 	//req-vcore = <650000>;
 	//req-vcore = <600000>;
-	//req-vcore = <550000>;
 
 	resets = <&infracfg_rst 4>;
 	reset-names = "hrst";
 
+	vcore-supply = <&mt6358_vcore_reg>;
+	vcore-levels = <
+			725000
+			650000
+			600000
+			550000
+		>;
+
 #if 0
-	/* 64-bit delay map */
-	rising-delay-map-mask  = <0x00000000 0x000007ff>; /* 0x001ff000000003ff */
-	falling-delay-map-mask = <0x00000000 0x00ffffff>; /* 0x000000007fffffff */
+	/* 64-bit delay map (CKGEN_MSDC_DLY_SEL=1) */
+	rising-expected-delay-maps = < /* refer to vcore-levels */
+			0xffff0000 0xffffffff /* 0xfffff003ffffffff/0xffff000fffffffff */
+			0xffffff80 0x007fffff /* 0xfffffffc00ffffff/0xffffffc007ffffff */
+			0xffffffff 0x0001ffff /* 0xfffffffff801ffff/0xffffffffc00fffff */
+			0x000fffff 0xf80003ff /* 0x001ffffffff003ff/0x03ffffffff801fff */
+		>;
+	rising-delay-map-mask  = <0x00000000 0x000007ff>; /* 0x001ff000000003ff/0x03ff000000001fff */
+	falling-delay-map-mask = <0x00000000 0x00ffffff>; /* 0x000000007fffffff/0x00000007ffffffff */
+	rising-delay-min-length = <11>;
 #else
-	/* 32-bit delay map */
+	/* 32-bit delay map (CKGEN_MSDC_DLY_SEL=1) */
+	rising-expected-delay-maps = < /* refer to vcore-levels */
+			0xffffffff /* 0xffffffff */
+			0x007fffff /* 0x00ffffff/0x03ffffff/0x07ffffff */
+			0x0001ffff /* 0xf003ffff/0xe007ffff/0x801fffff/0x001fffff/0x003fffff */
+			0xf80007ff /* 0xffe007ff/0xffc00fff/0xff803fff/0xff003fff */
+		>;
 	rising-delay-map-mask  = <0x000007ff>; /* 0x000003ff */
 	falling-delay-map-mask = <0x00ffffff>; /* to get a smaller delay */ /* 0x7fffffff */
+	rising-delay-min-length = <11>;
 #endif
+	each-delay-tuning-loop = <5>;
+
 	mediatek,ckgen-delay = <1>; /* CKGEN_MSDC_DLY_SEL: 0-31 */
 	//tuning-both-edges;
+
+	ahb-bus-no-incr1; /* AHB bus no incr1 burst type */
 
 	affinity-hint-cpu = <2>;
 };
@@ -1187,15 +1245,16 @@ ROOT_NODE {
 
 &i2c7 {
 	clock-frequency = <50000>;
+	//mutex-lock-ops;
 	pinctrl-names = "default", "sleep";
 	pinctrl-0 = <&i2c7_default>;
 	pinctrl-1 = <&i2c7_sleep>;
 
 	bat: battery {
 		compatible = "simple-battery";
-		voltage-min-design-microvolt = <3450000>; //3450mV? ; BQ27XXX_DM_TERMINATE_VOLTAGE, capacity=0%
-		energy-full-design-microwatt-hours = <34265000>; //8900mAhx3.85V=34265mWh ; BQ27XXX_DM_DESIGN_ENERGY
-		charge-full-design-microamp-hours = <8900000>; //8900mAh ; BQ27XXX_DM_DESIGN_CAPACITY
+		voltage-min-design-microvolt = <3400000>; //BQ27XXX_DM_TERMINATE_VOLTAGE, capacity=0%
+		energy-full-design-microwatt-hours = <30800000>; //8000mAhx3.85V=30800mWh ; BQ27XXX_DM_DESIGN_ENERGY
+		charge-full-design-microamp-hours = <8000000>; //BQ27XXX_DM_DESIGN_CAPACITY
 	};
 
 	bq78z100: fuel-gauge@55 {
@@ -1220,6 +1279,10 @@ ROOT_NODE {
 &mtk_gauge {
 	DISABLE_MTKBATTERY = <1>;
 	//disable-mtkbattery = <1>;
+};
+
+&bp_thl {
+	gauge = <&bq78z100>;
 };
 
 &pe {
@@ -1250,11 +1313,16 @@ ROOT_NODE {
 
 	/* dual charger */
 	dual_polling_ieoc = <450000>; //100-800mA
-	postcc_ieoc = <150000>; //postcc -> single charger termination current, 100-800mA
+	postcc_ieoc = <300000>; //postcc -> single charger termination current, 100-800mA
 	slave_mivr_diff = <100000>;
 	vbat_threshold = <4150>;
 
 	boot_mode = <&chosen>;
+
+	/* MT6375 output inductor protection by limiting its input current (AICR) */
+	enable-inductor-protect = <1>; //for fixed PDO (5V, 9V, 12V; no PPS)
+
+	min_charger_voltage = <4400000>; //CHG1's MIVR; CHG2's MIVR = CHG1's + slave_mivr_diff
 };
 
 &pe45 {
@@ -1344,12 +1412,12 @@ ROOT_NODE {
 	//ta_ac_charger_current = <3000000>;
 	//pd_charger_current = <500000>; //<-- to 3A? lk can support pd?
 
-	//boot_battery_voltage = <3450000>; //uA, defautl: 3450mA
+	boot_battery_voltage = <3500000>; //uA, defautl: 3450mA
 };
 
 &mt6375_chg {
 	//vbus_ov = <14500>; //with dual charger RT9471, we may change it to <= 13500mV or 14000mV.
-	ieoc = <150>; //mt6375 single charger termination current, 100-800mA
+	ieoc = <300>; //mt6375 single charger termination current, 100-800mA
 	//ieoc = <100>
 	//eoc_time = <30>; //0/15/30/45 mins
 
@@ -1365,6 +1433,58 @@ ROOT_NODE {
 	usb-sel-gpios = <&pio 156 0>;
 	pogovbus-supply = <&pogo5v>;
 	pogo-id-gpios = <&pio 6 0>;
+};
+
+&u2port0 {
+#if 0 /* mt6789.dts default values */
+	/** drivers/phy/mediatek/phy-mtk-tphy.c
+	 * USB OTG Mode at booting:
+	 *     mtk_phy_init() -> u2_phy_instance_init() -> u2_phy_efuse_set() -> u2_phy_props_set()
+	 *     -> mtk_phy_power_on() -> u2_phy_instance_power_on() -> hs_slew_rate_calibrate() -> u2_phy_props_set()
+	 *     -> mtk_phy_set_mode() -> u2_phy_instance_set_mode()
+	 *     -> mtk_phy_power_off() -> u2_phy_instance_power_off()
+	 * USB Device Mode:
+	 *     mtk_phy_set_mode() -> u2_phy_instance_set_mode()
+	 *     -> mtk_phy_power_on() -> u2_phy_instance_power_on() -> hs_slew_rate_calibrate() -> u2_phy_props_set()
+	 * USB Host Mode:
+	 *     mtk_phy_power_on() -> u2_phy_instance_power_on() -> hs_slew_rate_calibrate() -> u2_phy_props_set()
+	 *     -> mtk_phy_set_mode() -> u2_phy_instance_set_mode() -> u2_phy_host_props_set()
+	 */
+	/** /proc/mtk_usb/usb-phy0/u2_phy/
+	 *    USB Device Mode:
+	 *      vrt_sel     = 100
+	 *      term_sel    = 100
+	 *      phy_rev6    = 01
+	 *      phy_rev4    = 1
+	 *      rx_sqth     = 0101
+	 *      discth      = 0111
+	 *    USB Host Mode (inherited from USB Device Mode):
+	 *      vrt_sel     = 100
+	 *      term_sel    = 100
+	 *      phy_rev6    = 01
+	 */
+	mediatek,eye-vrt = <4>;
+	mediatek,eye-term = <4>;
+	mediatek,rev4 = <1>;
+	mediatek,rx_sqth = <5>;
+	mediatek,discth = <7>;
+#endif
+	/** USB Device Mode:
+	 *    vrt_sel  = 111
+	 *    term_sel = 100
+	 *    phy_rev6 = 11
+	 */
+	mediatek,eye-vrt = <7>;
+	mediatek,eye-term = <4>;
+	mediatek,rev6 = <3>;
+	/** USB Host Mode:
+	 *    vrt_sel  = 100
+	 *    term_sel = 100
+	 *    phy_rev6 = 11
+	 */
+	mediatek,eye-vrt-host = <4>;
+	mediatek,eye-term-host = <4>;
+	mediatek,rev6-host = <3>;
 };
 
 #include "mediatek/rt9471_slave_charger.dtsi" //for dual chargers - slave cahrger RT9471

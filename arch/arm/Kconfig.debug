@@ -1969,4 +1969,14 @@ config PID_IN_CONTEXTIDR
 	  additional instructions during context switch. Say Y here only if you
 	  are planning to use hardware trace tools with this kernel.
 
+config MTK_FIX_UNWIND_SPINLOCK_RECURSION
+	bool "fix spinlock recursion"
+	depends on PROVE_LOCKING && ARM
+	help
+	  This is a temporary config used for mtk eng load to fix
+	  the ALPS08324772 spinlock recursion 32bit system only.
+
+	  During the dump backtrace process, the spinlock recursive call problem occurs
+          when data_abort occurs in the search_index function.
+
 source "drivers/hwtracing/coresight/Kconfig"

@@ -306,6 +306,10 @@ static const struct linear_range rt9471_chg_range[RT9471_RANGE_MAX] = {
 	[RT9471_RANGE_PE20_CODE] = {5500000, 0, 0x1f, 500000},
 };
 
+//Laker: workaround, RT9471 can support 3.9-13.5V, but its MIVR range is only 3.9-5.4V
+static unsigned int RT9471_MIVR_uv = 0;
+
+
 /* Called function by power_supply_set/power_supply_get */
 static int rt9471_enable_hidden_mode(struct rt9471_chip *chip, bool en)
 {
@@ -1497,6 +1501,10 @@ static int rt9471_get_mivr(struct charger_device *chg_dev, u32 *uV)
 	if (ret < 0)
 		return ret;
 	*uV = val.intval;
+
+	if (RT9471_MIVR_uv >= 3900000 && RT9471_MIVR_uv <= 13500000)
+		*uV = RT9471_MIVR_uv;
+
 	return ret;
 }
 
@@ -1504,9 +1512,18 @@ static int rt9471_set_mivr(struct charger_device *chg_dev, u32 uV)
 {
 	struct rt9471_chip *chip = dev_get_drvdata(&chg_dev->dev);
 	union power_supply_propval val = {.intval = uV};
+	int ret = 0;
 
-	return  power_supply_set_property(chip->psy,
+	ret = power_supply_set_property(chip->psy,
 			POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT, &val);
+
+	if (ret < 0)
+		return ret;
+
+	if (uV >= 3900000 && uV <= 13500000)
+		RT9471_MIVR_uv = uV;
+
+	return ret;
 }
 
 static int rt9471_get_mivr_state(struct charger_device *chg_dev, bool *in_loop)

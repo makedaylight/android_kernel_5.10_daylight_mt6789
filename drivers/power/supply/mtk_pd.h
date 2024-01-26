@@ -196,6 +196,8 @@ extern int pd_hal_vbat_mon_en(struct chg_alg_device *alg,
 	enum chg_idx chgidx, bool en);
 extern int pd_hal_set_eoc_current(struct chg_alg_device *alg,
 	enum chg_idx chgidx, u32 uA);
+extern int pd_hal_reset_eoc_state(struct chg_alg_device *alg,
+	enum chg_idx chgidx);
 extern int pd_hal_enable_termination(struct chg_alg_device *alg,
 	enum chg_idx chgidx, bool enable);
 extern int pd_hal_enable_charger(struct chg_alg_device *alg,
