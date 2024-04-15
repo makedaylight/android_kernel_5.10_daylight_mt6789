@@ -58,8 +58,8 @@ struct mdla_util_pmu_ops {
 
 	void (*clr_counter_variable)(struct mdla_pmu_info *pmu);
 	void (*clr_cycle_variable)(struct mdla_pmu_info *pmu);
-	u32 (*get_num_evt)(u32 core_id, int priority);
-	void (*set_num_evt)(u32 core_id, int priority, int val);
+	u32 (*get_num_evt)(u32 core_id, u16 priority);
+	void (*set_num_evt)(u32 core_id, u16 priority, u32 val);
 	void (*set_percmd_mode)(struct mdla_pmu_info *pmu, u32 mode);
 	int (*get_curr_mode)(struct mdla_pmu_info *pmu);
 	u32 (*get_perf_end)(struct mdla_pmu_info *pmu);

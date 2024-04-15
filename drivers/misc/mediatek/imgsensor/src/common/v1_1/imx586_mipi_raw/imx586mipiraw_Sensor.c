@@ -565,8 +565,8 @@ static void write_sensor_QSC(void)
 
 static void set_dummy(void)
 {
-	pr_debug("dummyline = %d, dummypixels = %d\n",
-		imgsensor.dummy_line, imgsensor.dummy_pixel);
+	pr_debug("dummyline = %d, dummypixels = %d, imgsensor.frame_length = %d\n",
+		imgsensor.dummy_line, imgsensor.dummy_pixel, imgsensor.frame_length);
 	/* return;*/ /* for test */
 
 	if (!imx586_is_seamless) {
@@ -580,6 +580,9 @@ static void set_dummy(void)
 		imx586_i2c_data[imx586_size_to_write++] = 0x0341;
 		imx586_i2c_data[imx586_size_to_write++] = imgsensor.frame_length & 0xFF;
 	}
+	pr_debug("frame_length_rg = %d\n",
+			read_cmos_sensor_8(0x0341) << 8 | read_cmos_sensor_8(0x0340));
+	pr_debug("X:%s", __func__);
 }	/*	set_dummy  */
 
 static void set_mirror_flip(kal_uint8 image_mirror)

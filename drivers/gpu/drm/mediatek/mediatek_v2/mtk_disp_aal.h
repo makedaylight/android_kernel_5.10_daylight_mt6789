@@ -53,7 +53,9 @@
 #define MAX_DRE_FLT_NUM                         (16)
 #define DRE_FLT_NUM                             (12)
 
-#define GKI_DRE_FLT_NUM                      (13)
+#define LEGACY_DRE_FLT_NUM_MAX                  (11)
+#define DISP_AAL_DRE_FLT_FORCE_11               (0x44C)
+#define DISP_AAL_DRE_FLT_FORCE_12               (0x450)
 
 
 /* DRE 3.0 */

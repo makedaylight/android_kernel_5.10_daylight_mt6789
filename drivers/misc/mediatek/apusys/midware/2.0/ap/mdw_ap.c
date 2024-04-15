@@ -7,7 +7,7 @@
 #include "mdw_cmn.h"
 #include "mdw_ap.h"
 #include "mdw_ap_tag.h"
-#include "mdw_dmy.h"
+#include "mdw_sample.h"
 
 static int mdw_ap_sw_init(struct mdw_device *mdev)
 {
@@ -76,10 +76,10 @@ static int mdw_ap_late_init(struct mdw_device *mdev)
 		goto out;
 	}
 
-	/* init dmy driver */
-	ret = mdw_dmy_init();
+	/* init sample driver */
+	ret = mdw_sample_init();
 	if (ret) {
-		mdw_drv_err("init dmy dev fail\n");
+		mdw_drv_err("init sample dev fail\n");
 		goto rsc_deinit;
 	}
 
@@ -107,7 +107,7 @@ out:
 
 static void mdw_ap_late_deinit(struct mdw_device *mdev)
 {
-	mdw_dmy_deinit();
+	mdw_sample_deinit();
 	mdw_rsc_deinit();
 	mdw_ap_tag_deinit();
 }

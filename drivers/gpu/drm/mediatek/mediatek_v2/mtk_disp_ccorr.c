@@ -870,6 +870,10 @@ static int disp_ccorr_wait_irq(struct drm_device *dev, unsigned long timeout)
 		DDPDBG("%s: wait_event_interruptible ++ ", __func__);
 		ret = wait_event_interruptible(g_ccorr_get_irq_wq,
 			atomic_read(&g_ccorr_get_irq) == 1);
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret < 0)
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+#endif
 		DDPDBG("%s: wait_event_interruptible -- ", __func__);
 		DDPINFO("%s: get_irq = 1, waken up", __func__);
 		DDPINFO("%s: get_irq = 1, ret = %d", __func__, ret);
@@ -1793,11 +1797,8 @@ static void mtk_ccorr_prepare(struct mtk_ddp_comp *comp)
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	if (ccorr_run_restore[index_of_ccorr(comp->id)])
 		ddp_ccorr_restore(comp);
-	else {
-		if (!(readl(comp->regs + DISP_REG_CCORR_EN) & 0x1))
-			ddp_ccorr_restore(comp);
+	else
 		ccorr_run_restore[index_of_ccorr(comp->id)] = true;
-	}
 #else
 	ddp_ccorr_restore(comp);
 #endif

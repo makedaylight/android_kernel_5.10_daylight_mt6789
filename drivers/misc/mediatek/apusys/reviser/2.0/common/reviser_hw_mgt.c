@@ -9,6 +9,7 @@
 #include "reviser_cmn.h"
 #include "reviser_hw_cmn.h"
 #include "reviser_hw_mgt.h"
+#include "reviser_secure.h"
 
 struct reviser_hw_mgr {
 

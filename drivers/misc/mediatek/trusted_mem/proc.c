@@ -296,6 +296,10 @@ static int trusted_mem_init(struct platform_device *pdev)
 	mtee_mchunks_init();
 #endif
 
+#if IS_ENABLED(CONFIG_MTK_EMI)
+	tmem_mpu_vio_init();
+#endif
+
 	if (IS_ENABLED(CONFIG_TMEM_MEMORY_POOL_ALLOCATOR))
 		tmem_carveout_init();
 
@@ -326,6 +330,10 @@ static int trusted_mem_exit(struct platform_device *pdev)
 #endif
 
 	trusted_mem_subsys_exit();
+
+#if IS_ENABLED(CONFIG_MTK_EMI)
+	tmem_mpu_vio_exit();
+#endif
 
 	return 0;
 }

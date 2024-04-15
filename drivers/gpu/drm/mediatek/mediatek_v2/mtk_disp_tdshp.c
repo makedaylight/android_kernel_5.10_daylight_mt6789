@@ -350,8 +350,17 @@ static int disp_tdshp_wait_size(unsigned long timeout)
 	int ret = 0;
 
 	if (g_tdshp_get_size_available == false) {
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		do {
+			ret = wait_event_interruptible(g_tdshp_size_wq,
+				g_tdshp_get_size_available == true);
+			if (ret < 0)
+				DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+		} while (ret < 0);
+#else
 		ret = wait_event_interruptible(g_tdshp_size_wq,
 			g_tdshp_get_size_available == true);
+#endif
 
 		DDPINFO("size_available = 1, Wake up, ret = %d\n", ret);
 	} else {

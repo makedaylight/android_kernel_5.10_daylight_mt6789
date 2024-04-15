@@ -49,6 +49,10 @@ trusted_mem-y += tests/ut_cases.o
 trusted_mem-y += tests/ut_ssheap.o
 endif # !CONFIG_TEST_MTK_TRUSTED_MEMORY
 
+ifeq ($(CONFIG_MTK_GZ_KREE),y)
+trusted_mem-y += mpu_vio_checker.o
+endif
+
 ifneq ($(filter y m,$(CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM)),)
 #==========================================================================
 # TEE Seecure Memory Devices & Trustzone Peer Driver

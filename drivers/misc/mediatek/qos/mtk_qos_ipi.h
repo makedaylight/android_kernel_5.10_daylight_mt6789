@@ -106,7 +106,7 @@ struct qos_ipi_data {
 	} u;
 };
 
-#if IS_ENABLED(CONFIG_MTK_QOS_MT6893)
+#if IS_ENABLED(CONFIG_MTK_TINYSYS_SSPM_V3)
 extern int qos_ipi_to_sspm_scmi_command(unsigned int cmd, unsigned int p1, unsigned int p2,
 		unsigned int p3,unsigned int p4);
 #else

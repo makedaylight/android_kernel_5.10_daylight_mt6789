@@ -29,6 +29,7 @@ struct mt_led_data {
 	struct led_debug_info debug;
 	int (*mtk_hw_brightness_set)(struct mt_led_data *m_data,
 		int brightness);
+	void (*mtk_hw_brightness_force_off)(struct mt_led_data *m_data);
 	int (*mtk_conn_id_get)(struct mt_led_data *m_data,
 		int flag);
 	struct mutex	led_access;

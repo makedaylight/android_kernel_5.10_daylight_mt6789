@@ -11,10 +11,11 @@
 # GNU General Public License for more details.
 #
 
-ccflags-y += -I$(srctree)/drivers/gpu/mediatek/gpufreq/include/
+ccflags-y += -I$(srctree)/drivers/gpu/mediatek/gpufreq/
 ccflags-y += -I$(srctree)/include/linux/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/eemgpu/common/inc/
+ccflags-y += -I$(srctree)/drivers/gpu/mediatek/gpufreq/v2/include
 
 obj-${CONFIG_MTK_PTPOD_GPU} += mtk_eem.o
 mtk_eem-y += \

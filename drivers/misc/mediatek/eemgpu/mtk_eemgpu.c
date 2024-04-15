@@ -55,7 +55,7 @@
 #include "mtk_eemgpu_internal_ap.h"
 #include "mtk_eemgpu_internal.h"
 #if IS_ENABLED(CONFIG_MTK_GPU_SUPPORT)
-#include "mtk_gpufreq.h"
+#include "gpu_misc.h"
 #endif
 #include <regulator/consumer.h>
 
@@ -65,6 +65,7 @@
 #define LVTS_COEFF_B_X_1000                      (250460)
 #define DEFAULT_EFUSE_GOLDEN_TEMP                (50)
 #define WAIT_TIME       (2500000)
+#define AGING_VAL_SIZE        (2)
 
 enum thermal_bank_name {
 	THERMAL_BANK0 = 0,
@@ -130,6 +131,7 @@ static int get_devinfo(struct platform_device *pdev)
 	int devinfo = 0, efuse = 0, efuse_mask = 0;
 	int count = 0;
 	int mcl50 = 0;
+	unsigned long ul_mask;
 
 	FUNC_ENTER(FUNC_LV_HELP);
 	val = (int *)&eemg_devinfo;
@@ -152,10 +154,11 @@ static int get_devinfo(struct platform_device *pdev)
 		of_property_read_u32_index(node, "gpu-vb-efuse", 0, &efuse);
 		of_property_read_u32_index(node, "gpu-vb-efuse", 1,
 			&efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		nvmem_device_read(nvmem_dev, efuse, sizeof(__u32), &devinfo);
 		of_property_read_u32_index(node, "gpu-vb-opp0",
 			(devinfo & efuse_mask) >> find_first_bit(
-			(unsigned long *)&efuse_mask, 32), &gpu_vb_volt);
+			&ul_mask, 32), &gpu_vb_volt);
 		if (mcl50) {
 			ret = of_property_read_u32(node, "gpu-vb-opp0-mcl50",
 				&gpu_vb_volt);
@@ -208,8 +211,8 @@ static int get_devinfo(struct platform_device *pdev)
 	nvmem_device_read(nvmem_dev, efuse, sizeof(__u32), &devinfo);
 
 	ret = of_property_read_u32(node, "golden-temp-mask", &efuse);
-
-	golden_temp = ((devinfo & efuse)) >> find_first_bit((unsigned long *)&efuse, 32);
+	ul_mask = (unsigned long)efuse;
+	golden_temp = ((devinfo & efuse)) >> find_first_bit(&ul_mask, 32);
 
 	if (golden_temp != 0) {
 		ret = of_property_read_u32(node, "golden-temp-default", &efuse);
@@ -262,6 +265,7 @@ static void _mt_eemg_aee_init(void)
 #endif
 
 #ifdef CONFIG_THERMAL
+#if !IS_ENABLED(CONFIG_MTK_LEGACY_THERMAL)
 /* common part in thermal */
 int tscpu_get_temp_by_bank(enum thermal_bank_name ts_bank)
 {
@@ -329,7 +333,7 @@ int tscpu_get_temp_by_bank(enum thermal_bank_name ts_bank)
 	return total;
 }
 #endif
-
+#endif
 
 static struct eemg_ctrl *id_to_eemg_ctrl(enum eemg_ctrl_id id)
 {
@@ -401,6 +405,7 @@ void base_ops_disable_locked_gpu(struct eemg_det *det, int reason)
 
 		/* Clear EEM interrupt EEMGINTSTS */
 		eemg_write(EEMGINTSTS, 0x00ffffff);
+		fallthrough;
 
 	case BY_PROCFS: /* 1 */
 		det->disabled |= reason;
@@ -1082,7 +1087,6 @@ static void get_volt_table_in_thread(struct eemg_det *det)
 	/* Check Temperature */
 	ndet->temp = ndet->ops->get_temp_gpu(det);
 
-
 	if (ndet->temp <= EXTRA_LOW_TEMP_VAL)
 		ndet->isTempInv = EEM_EXTRALOW_T;
 	else if (ndet->temp <= LOW_TEMP_VAL)
@@ -1336,6 +1340,7 @@ static void eemg_init_det(struct eemg_det *det, struct eemg_devinfo *devinfo,
 	const char *domain;
 	int *val;
 	int ret, efuse_offset = 0, efuse_mask = 0, efuse = 0;
+	unsigned long ul_mask;
 	struct eemg_det *h_det, *l_det;
 
 	FUNC_ENTER(FUNC_LV_HELP);
@@ -1352,36 +1357,44 @@ static void eemg_init_det(struct eemg_det *det, struct eemg_devinfo *devinfo,
 	if (np) {
 		of_property_read_u32_index(np, "MDES", 0, &efuse_offset);
 		of_property_read_u32_index(np, "MDES", 1, &efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		det->MDES      = (*(val + efuse_offset) & efuse_mask) >>
-			find_first_bit((unsigned long *)&efuse_mask, 32);
+			find_first_bit(&ul_mask, 32);
 		of_property_read_u32_index(np, "BDES", 0, &efuse_offset);
 		of_property_read_u32_index(np, "BDES", 1, &efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		det->BDES       = (*(val + efuse_offset) & efuse_mask) >>
-			find_first_bit((unsigned long *)&efuse_mask, 32);
+			find_first_bit(&ul_mask, 32);
 		of_property_read_u32_index(np, "DCMDET", 0, &efuse_offset);
 		of_property_read_u32_index(np, "DCMDET", 1, &efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		det->DCMDET       = (*(val + efuse_offset) & efuse_mask) >>
-			find_first_bit((unsigned long *)&efuse_mask, 32);
+			find_first_bit(&ul_mask, 32);
 		of_property_read_u32_index(np, "DCBDET", 0, &efuse_offset);
 		of_property_read_u32_index(np, "DCBDET", 1, &efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		det->DCBDET      = (*(val + efuse_offset) & efuse_mask) >>
-			find_first_bit((unsigned long *)&efuse_mask, 32);
+			find_first_bit(&ul_mask, 32);
 		of_property_read_u32_index(np, "EEMINITEN", 0, &efuse_offset);
 		of_property_read_u32_index(np, "EEMINITEN", 1, &efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		det->EEMINITEN = (*(val + efuse_offset) & efuse_mask) >>
-			find_first_bit((unsigned long *)&efuse_mask, 32);
+			find_first_bit(&ul_mask, 32);
 		of_property_read_u32_index(np, "EEMMONEN", 0, &efuse_offset);
 		of_property_read_u32_index(np, "EEMMONEN", 1, &efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		det->EEMMONEN      = (*(val + efuse_offset) & efuse_mask) >>
-			find_first_bit((unsigned long *)&efuse_mask, 32);
+			find_first_bit(&ul_mask, 32);
 		of_property_read_u32_index(np, "MTDES", 0, &efuse_offset);
 		of_property_read_u32_index(np, "MTDES", 1, &efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		det->MTDES      = (*(val + efuse_offset) & efuse_mask) >>
-			find_first_bit((unsigned long *)&efuse_mask, 32);
+			find_first_bit(&ul_mask, 32);
 		of_property_read_u32_index(np, "SPEC", 0, &efuse_offset);
 		of_property_read_u32_index(np, "SPEC", 1, &efuse_mask);
+		ul_mask = (unsigned long)efuse_mask;
 		det->SPEC       = (*(val + efuse_offset) & efuse_mask) >>
-			find_first_bit((unsigned long *)&efuse_mask, 32);
+			find_first_bit(&ul_mask, 32);
 		ret = of_property_read_u32(np, "max_freq_khz",
 			&det->max_freq_khz);
 		ret = of_property_read_u32(np, "loo_role", &det->loo_role);
@@ -1390,8 +1403,9 @@ static void eemg_init_det(struct eemg_det *det, struct eemg_devinfo *devinfo,
 		of_property_read_u32_index(np, "VMIN", 1, &efuse_mask);
 		nvmem_device_read(nvmem_dev, efuse_offset, sizeof(__u32),
 			&efuse);
+		ul_mask = (unsigned long)efuse_mask;
 		of_property_read_u32_index(np, "VMIN-idx", (efuse  & efuse_mask)
-			>> find_first_bit((unsigned long *)&efuse_mask, 32),
+			>> find_first_bit(&ul_mask, 32),
 			&det->VMIN);
 		ret = of_property_read_u32(np, "VMAX", &det->VMAX);
 		det->VMAX	+= det->DVTFIXED;
@@ -1789,7 +1803,7 @@ static inline void handle_init02_isr(struct eemg_det *det)
 
 static inline void handle_init_err_isr(struct eemg_det *det)
 {
-	int i;
+	//int i;
 	/* int *val = (int *)&eemg_devinfo; */
 
 	FUNC_ENTER(FUNC_LV_LOCAL);
@@ -1808,9 +1822,9 @@ static inline void handle_init_err_isr(struct eemg_det *det)
 		 det->turn_pt);
 
 	/* Depend on EFUSE location */
-	for (i = 0; i < sizeof(struct eemg_devinfo) / sizeof(unsigned int);
-		i++)
-		eemg_error("M_HW_RES%d= 0x%08X\n", i, val[i]);
+	//for (i = 0; i < sizeof(struct eemg_devinfo) / sizeof(unsigned int);
+		//i++)
+		//eemg_error("M_HW_RES%d= 0x%08X\n", i, val[i]);
 
 	eemg_error("EEM init err: EEMGEN(%p) = 0x%X, EEMGINTSTS(%p) = 0x%X\n",
 			 EEMGEN, eemg_read(EEMGEN),
@@ -2231,7 +2245,7 @@ static int eemg_probe(struct platform_device *pdev)
 		return 0;
 	}
 
-#if IS_ENABLED(CONFIG_MTK_GPU_SUPPORT)
+#if 0
 	if (mt_gpufreq_not_ready()) {
 		eemg_error("Check gpu status for EEMGPU\n");
 		return EPROBE_DEFER;
@@ -2550,7 +2564,7 @@ static ssize_t eemg_setmargin_proc_write(struct file *file,
 			const char __user *buffer, size_t count, loff_t *pos)
 {
 	int ret;
-	int aging_val[2];
+	int aging_val[AGING_VAL_SIZE];
 	int i = 0;
 	int start_oft, end_oft;
 	char *buf = (char *) __get_free_page(GFP_USER);
@@ -2582,8 +2596,8 @@ static ssize_t eemg_setmargin_proc_write(struct file *file,
 		ret = -EINVAL;
 
 	while ((tok = strsep(&buf, " ")) != NULL) {
-		if (i == 3) {
-			eemg_error("number of arguments > 3!\n");
+		if (i == AGING_VAL_SIZE) {
+			eemg_error("number of arguments >= 2!\n");
 			goto out;
 		}
 

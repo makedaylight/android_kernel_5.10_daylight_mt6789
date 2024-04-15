@@ -76,14 +76,23 @@ static wait_queue_head_t wait_queue_enque;
 
 static uint32_t ccu_version;
 static uint32_t clock_num;
-static struct mtk_ccu_clk_name clock_name[] = {
-	{true, "TOP_CCU_CLK"},
+
+static struct mtk_ccu_clk_name MT6833_ccu_clock_name[] = {
 	{true, "CCU_CLK_CAM_CAM"},
 	{true, "CCU_CLK_CAM_LARB13"},
 	{true, "CCU_CLK_CAM_CCU0"},
 	{true, "CCU_CLK_CAM_GALS"},
 	{true, "CCU_CLK_CAM_CCU_GALS"},
 	{false, ""}};
+
+static struct mtk_ccu_clk_name MT6893_ccu_clock_name[] = {
+	{true, "TOP_CCU_CLK"},
+	{true, "CCU_CLK_CAM_CAM"},
+	{true, "CCU_CLK_CAM_LARB13"},
+	{true, "CCU_CLK_CAM_CCU0"},
+	{false, ""}};
+
+static struct mtk_ccu_clk_name clock_name[CCU_CLK_PWR_NUM];
 
 struct ccu_iova_t ccu_iova[CCU_IOVA_BUFFER_MAX];
 int iova_buf_count;
@@ -598,7 +607,7 @@ static long ccu_compat_ioctl(struct file *flip,
 			power.workBuf.va_log[0]);
 
 		ptr_power32 = compat_ptr(arg);
-		ptr_power64 = compat_alloc_user_space(sizeof(*ptr_power64));
+		ptr_power64 = kmalloc(sizeof(*ptr_power64), GFP_KERNEL);
 		if (ptr_power64 == NULL)
 			return -EFAULT;
 
@@ -700,7 +709,9 @@ int ccu_clock_enable(void)
 		return ret;
 	}
 
-	ret = mtk_smi_larb_get(g_ccu_device->smi_dev);
+	/* TODO: still need smi_dev?*/
+	ret = pm_runtime_resume_and_get(g_ccu_device->smi_dev);
+
 	if (ret) {
 		LOG_ERR("mtk_smi_larb_get fail.\n");
 		--_clk_count;
@@ -709,8 +720,9 @@ int ccu_clock_enable(void)
 	}
 
 	ret = pm_runtime_get_sync(g_ccu_device->dev);
+
 	if (ret) {
-		mtk_smi_larb_put(g_ccu_device->smi_dev);
+		pm_runtime_put_sync(g_ccu_device->smi_dev);
 		LOG_ERR("pm_runtime_get_sync fail.\n");
 		--_clk_count;
 		mutex_unlock(&g_ccu_device->clk_mutex);
@@ -720,6 +732,7 @@ int ccu_clock_enable(void)
 #ifdef CCU_QOS_SUPPORT_ENABLE
 	ccu_qos_init(g_ccu_device);
 #endif
+
 #ifndef CCU_LDVT
 	for (i = 0; (i < clock_num) && (i < CCU_CLK_PWR_NUM); ++i) {
 		ret = clk_prepare_enable(ccu_clk_pwr_ctrl[i]);
@@ -741,7 +754,7 @@ ERROR:
 		clk_disable_unprepare(ccu_clk_pwr_ctrl[i]);
 
 	pm_runtime_put_sync(g_ccu_device->dev);
-	mtk_smi_larb_put(g_ccu_device->smi_dev);
+	pm_runtime_put_sync(g_ccu_device->smi_dev);
 
 	--_clk_count;
 #endif
@@ -762,7 +775,7 @@ void ccu_clock_disable(void)
 			clk_disable_unprepare(ccu_clk_pwr_ctrl[i]);
 
 		pm_runtime_put_sync(g_ccu_device->dev);
-		mtk_smi_larb_put(g_ccu_device->smi_dev);
+		pm_runtime_put_sync(g_ccu_device->smi_dev);
 #ifdef CCU_QOS_SUPPORT_ENABLE
 		ccu_qos_uninit(g_ccu_device);
 #endif
@@ -1299,35 +1312,35 @@ static long ccu_ioctl(struct file *flip, unsigned int cmd,
 		buf = dma_buf_get(fd);
 		if (IS_ERR(buf)) {
 			LOG_ERR(
-			"[CCU_IOCTL_GET_IOVA] dma_buf_get failed, ret=%d fd=%d\n", buf, fd);
+			"[CCU_IOCTL_GET_IOVA] dma_buf_get failed, ret=%llx fd=%d\n", (uint64_t)buf, fd);
 			mutex_unlock(&g_ccu_device->dev_mutex);
 			return false;
 		}
 		LOG_ERR(
-			"[CCU_IOCTL_GET_IOVA] dma_buf_get va=%x\n", buf);
+			"[CCU_IOCTL_GET_IOVA] dma_buf_get va=%llx\n", (uint64_t)buf);
 		ccu_iova[iova_buf_count].dma_buf = buf;
 		ccu_iova[iova_buf_count].attach =
 			dma_buf_attach(ccu_iova[iova_buf_count].dma_buf, g_ccu_device->dev1);
 		if (IS_ERR(ccu_iova[iova_buf_count].attach)) {
 			LOG_ERR(
-			"[CCU_IOCTL_GET_IOVA] dma_buf_attach failed, attach=%d va=%x\n",
-			 ccu_iova[iova_buf_count].attach, ccu_iova[iova_buf_count].dma_buf);
+			"[CCU_IOCTL_GET_IOVA] dma_buf_attach failed, attach=%llx va=%llx\n",
+			 (uint64_t)ccu_iova[iova_buf_count].attach, (uint64_t)ccu_iova[iova_buf_count].dma_buf);
 			goto err_attach;
 		}
 		LOG_ERR(
-			"[CCU_IOCTL_GET_IOVA] dma_buf_attach va=%x\n",
-			ccu_iova[iova_buf_count].attach);
+			"[CCU_IOCTL_GET_IOVA] dma_buf_attach va=%llx\n",
+			(uint64_t)ccu_iova[iova_buf_count].attach);
 		ccu_iova[iova_buf_count].sgt =
 			dma_buf_map_attachment(ccu_iova[iova_buf_count].attach, DMA_BIDIRECTIONAL);
 		if (IS_ERR(ccu_iova[iova_buf_count].sgt)) {
 			LOG_ERR(
-			"[CCU_IOCTL_GET_IOVA] dma_buf_map_attachment failed, sgt=%d va=%d\n",
-			 ccu_iova[iova_buf_count].sgt, DMA_BIDIRECTIONAL);
+			"[CCU_IOCTL_GET_IOVA] dma_buf_map_attachment failed, sgt=%llx va=%d\n",
+			 (uint64_t)ccu_iova[iova_buf_count].sgt, DMA_BIDIRECTIONAL);
 			goto err_map;
 		}
 		LOG_ERR(
-			"[CCU_IOCTL_GET_IOVA] dma_buf_map_attachment va=%x\n",
-			ccu_iova[iova_buf_count].sgt);
+			"[CCU_IOCTL_GET_IOVA] dma_buf_map_attachment va=%llx\n",
+			(uint64_t)ccu_iova[iova_buf_count].sgt);
 
 		/* return true;*/
 
@@ -1335,7 +1348,7 @@ static long ccu_ioctl(struct file *flip, unsigned int cmd,
 		dma_addr = sg_dma_address(ccu_iova[iova_buf_count].sgt->sgl);
 		iova_buf_count++;
 		LOG_ERR(
-			"[CCU_IOCTL_GET_IOVA] sg_dma_address, ret=%ld\n", dma_addr);
+			"[CCU_IOCTL_GET_IOVA] sg_dma_address, ret=%llu\n", dma_addr);
 
 		ret = copy_to_user((void *)arg, &dma_addr, sizeof(dma_addr_t));
 		if (ret != 0) {
@@ -1587,8 +1600,9 @@ static int ccu_read_platform_info_from_dt(struct device_node
 
 	ccu_hw_base = reg[1];
 
-	ret = of_property_read_u32(node, "ccu_version", reg);
-	ccu_version = (ret < 0) ? CCU_VER_MT6885 : reg[0];
+	ret = of_property_read_u32(node, "ccu_version", &ccu_version);
+	if (ret < 0)
+		ccu_version = CCU_VER_MT6833;
 
 	LOG_DBG("ccu mt%u read dt property ccu_hw_base = %x\n",
 		ccu_version, ccu_hw_base);
@@ -1603,6 +1617,7 @@ static int ccu_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *node;
 	struct device_node *smi_node;
+	struct device_link *link;
 	struct platform_device *smi_pdev;
 	int ret = 0;
 	uint32_t phy_addr;
@@ -1669,7 +1684,7 @@ static int ccu_probe(struct platform_device *pdev)
 			devm_ioremap(dev, phy_addr, phy_size);
 #endif
 		LOG_DBG_MUST("pmem_base pa: 0x%x, size: 0x%x\n", phy_addr, phy_size);
-		LOG_DBG_MUST("pmem_base va: 0x%lx\n", (uint64_t)g_ccu_device->pmem_base);
+		LOG_DBG_MUST("pmem_base va: 0x%llx\n", (uint64_t)g_ccu_device->pmem_base);
 
 		/*remap camsys_base*/
 		phy_addr = CCU_CAMSYS_BASE;
@@ -1685,6 +1700,13 @@ static int ccu_probe(struct platform_device *pdev)
 		LOG_INF("camsys_base va: 0x%lx\n", (uint64_t)g_ccu_device->camsys_base);
 
 		/* get Clock control from device tree.  */
+
+		// check platform version
+		if (ccu_version == CCU_VER_MT6893)
+			memcpy(clock_name, MT6893_ccu_clock_name, sizeof(MT6893_ccu_clock_name));
+		else
+			memcpy(clock_name, MT6833_ccu_clock_name, sizeof(MT6833_ccu_clock_name));
+
 		for (clki = 0; clki < CCU_CLK_PWR_NUM; ++clki) {
 			if (!clock_name[clki].enable)
 				break;
@@ -1715,6 +1737,12 @@ static int ccu_probe(struct platform_device *pdev)
 			return -ENODEV;
 		}
 		of_node_put(smi_node);
+
+		link = device_link_add(&pdev->dev, &smi_pdev->dev,
+				DL_FLAG_PM_RUNTIME | DL_FLAG_STATELESS);
+		if (!link)
+			LOG_ERR("Unable to link smi larb\n");
+
 		g_ccu_device->smi_dev = &smi_pdev->dev;
 
 #ifdef CCU_QOS_SUPPORT_ENABLE
@@ -1742,9 +1770,9 @@ static int ccu_probe(struct platform_device *pdev)
 		LOG_INF("ccu1@0x%lx\n", (uint64_t)g_ccu_device->dev1);
 
 		g_ccu_device->irq_num = irq_of_parse_and_map(node, 0);
-		LOG_INF_MUST("probe 1, ccu_base: 0x%lx, bin_base: 0x%lx,",
+		LOG_INF_MUST("probe 1, ccu_base: 0x%llx, bin_base: 0x%llx,",
 		(uint64_t)g_ccu_device->ccu_base, (uint64_t)g_ccu_device->bin_base);
-		LOG_INF_MUST("probe 1, ccu_base:irq_num: %d, pdev: 0x%lx\n",
+		LOG_INF_MUST("probe 1, ccu_base:irq_num: %d, pdev: 0x%llx\n",
 		g_ccu_device->irq_num, (uint64_t)g_ccu_device->dev);
 
 		if (g_ccu_device->irq_num > 0) {
@@ -2014,4 +2042,5 @@ module_init(CCU_INIT);
 module_exit(CCU_EXIT);
 MODULE_DESCRIPTION("MTK CCU Driver");
 MODULE_AUTHOR("SW1");
+MODULE_IMPORT_NS(DMA_BUF);
 MODULE_LICENSE("GPL");

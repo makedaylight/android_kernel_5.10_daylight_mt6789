@@ -47,13 +47,15 @@ int reviser_power_on(void *drvinfo)
 	if (rdv->power.power_count == 0) {
 
 		ret = apu_device_power_on(REVISER);
-		if (ret < 0)
+		if (ret < 0) {
 			LOG_ERR("PowerON Fail (%d)\n", ret);
-
+			goto out;
+		}
 	}
 	rdv->power.power_count++;
-	mutex_unlock(&rdv->lock.mutex_power);
 
+out:
+	mutex_unlock(&rdv->lock.mutex_power);
 	return ret;
 }
 
@@ -71,6 +73,7 @@ int reviser_power_off(void *drvinfo)
 		LOG_ERR("Power count invalid (%d)\n",
 				rdv->power.power_count);
 		ret = -EINVAL;
+		rdv->power.power_count = 0;
 		mutex_unlock(&rdv->lock.mutex_power);
 		return ret;
 	} else if (rdv->power.power_count == 0) {

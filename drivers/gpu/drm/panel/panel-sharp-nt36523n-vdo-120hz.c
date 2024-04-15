@@ -100,49 +100,57 @@ static void sharp_check_sample_id(struct sharp *ctx)
 
 	if (ctx->sample_id2 == SHARP_PRE_TS_ID2) {
 		ctx->lcm_config = PRE_TS_CONFIG;
-		ctx->panel_sample = "Pre-TS";
+		ctx->panel_sample = PRE_TS_NAME;
 	} else {
 		if (ctx->sample_id1 == SHARP_TS_ID1) {
 			ctx->lcm_config = TS_CONFIG;
-			ctx->panel_sample = "TS";
+			ctx->panel_sample = TS_NAME;
 		} else if ((ctx->sample_id1 & 0xf0) == SHARP_ES_ID1) {
 			if (ctx->sample_id3 == SHARP_PRE_ES_ID3) {
 				ctx->lcm_config = PRE_ES_CONFIG;
-				ctx->panel_sample = "Pre-ES";
+				ctx->panel_sample = PRE_ES_NAME;
 			} else {
 				if (ctx->sample_id1 == SHARP_ES_ID1) {
 					ctx->lcm_config = ES_CONFIG;
-					ctx->panel_sample = "ES";
+					ctx->panel_sample = ES_NAME;
 				} else if (ctx->sample_id1 == SHARP_ES2_1_ID1) {
 					ctx->lcm_config = ES2_1_CONFIG;
-					ctx->panel_sample = "ES2-1";
+					ctx->panel_sample = ES2_1_NAME;
 				} else if (ctx->sample_id1 == SHARP_ES2_2_ID1) {
 					ctx->lcm_config = ES2_2_CONFIG;
-					ctx->panel_sample = "ES2-2";
-				} else /*if (ctx->sample_id1 == SHARP_ES3_ID1)*/ {
+					ctx->panel_sample = ES2_2_NAME;
+				} else if (ctx->sample_id1 == SHARP_ES3_ID1) {
 					ctx->lcm_config = ES3_CONFIG;
-					ctx->panel_sample = "ES3";
+					ctx->panel_sample = ES3_NAME;
+				} else /*if (ctx->sample_id1 == SHARP_ES2_FINAL_ID1)*/ {
+					ctx->lcm_config = ES2_FINAL_CONFIG;
+					ctx->panel_sample = ES2_FINAL_NAME;
 				}
 			}
 		} else if ((ctx->sample_id1 & 0xf0) == SHARP_CS_ID1) {
 			/*if (ctx->sample_id1 == SHARP_CS_ID1)*/ {
 				ctx->lcm_config = CS_CONFIG;
-				ctx->panel_sample = "CS";
+				ctx->panel_sample = CS_NAME;
 			}
 		} else if ((ctx->sample_id1 & 0xf0) == SHARP_MP_ID1) {
 			/*if (ctx->sample_id1 == SHARP_MP_ID1)*/ {
 				ctx->lcm_config = MP_CONFIG;
-				ctx->panel_sample = "MP";
+				ctx->panel_sample = MP_NAME;
 			}
+		} else if ((ctx->sample_id1 & 0xf0) > SHARP_LATEST_ID1) {
+			LCM_LOGI("Newer Sample ID (id1: 0x%02x, id2: 0x%02x, id3: 0x%02x)\n",
+				ctx->sample_id1, ctx->sample_id2, ctx->sample_id3);
+			ctx->lcm_config = LATEST_CONFIG;
+			ctx->panel_sample = LATEST_NAME;
 		} else {
-			LCM_LOGI("Unknown Sample ID (id1: 0x%02x, id2: 0x%02x)\n",
-				ctx->sample_id1, ctx->sample_id2);
-			ctx->lcm_config = PRE_TS_CONFIG;
-			ctx->panel_sample = "Pre-TS";
+			LCM_LOGI("Unknown Sample ID (id1: 0x%02x, id2: 0x%02x, id3: 0x%02x)\n",
+				ctx->sample_id1, ctx->sample_id2, ctx->sample_id3);
+			ctx->lcm_config = UNKNOWN_CONFIG;
+			ctx->panel_sample = UNKNOWN_NAME;
 		}
 	}
 	LCM_DEV_LOGI("ctx->lcm_config: 0x%X\n", ctx->lcm_config);
-	LCM_DEV_LOGI("Use %s Config\n", ctx->panel_sample);
+	LCM_DEV_LOGI("Config: '%s'\n", ctx->panel_sample);
 
 	LCM_DEV_LOGD("---");
 }
@@ -364,7 +372,11 @@ static int sharp_panel_init(struct drm_panel *panel)
 	switch (ctx->lcm_config & SAMPLE_MASK) {
 	case SAMPLE_MP:
 	case SAMPLE_CS:
+	case SAMPLE_ES2_FINAL:
 	case SAMPLE_ES3:
+		push_table(ctx, init_es3_120hz_3x_dsc, ARRAY_SIZE(init_es3_120hz_3x_dsc));
+		break;
+
 	case SAMPLE_ES2_2:
 		push_table(ctx, init_es2_2_120hz_3x_dsc, ARRAY_SIZE(init_es2_2_120hz_3x_dsc));
 		break;
@@ -632,6 +644,7 @@ static int sharp_prepare(struct drm_panel *panel)
 		switch (ctx->lcm_config & SAMPLE_MASK) {
 		case SAMPLE_MP:
 		case SAMPLE_CS:
+		case SAMPLE_ES2_FINAL:
 		case SAMPLE_ES3:
 		case SAMPLE_ES2_2:
 		case SAMPLE_ES2_1:
@@ -1620,6 +1633,7 @@ static int sharp_probe(struct mipi_dsi_device *dsi)
 		switch (ctx->lcm_config & SAMPLE_MASK) {
 		case SAMPLE_MP:
 		case SAMPLE_CS:
+		case SAMPLE_ES2_FINAL:
 		case SAMPLE_ES3:
 		case SAMPLE_ES2_2:
 		case SAMPLE_ES2_1:
@@ -1673,6 +1687,9 @@ static int sharp_probe(struct mipi_dsi_device *dsi)
 	device_create_file(ctx->dev, &dev_attr_state);
 
 	LCM_BOOTPROF_LOG("[LCM] Driver probe success");
+	scnprintf(msgbuf, sizeof(msgbuf), "[LCM] ID1=0x%02x, ID2=0x%02x, ID3=0x%02x",
+								ctx->sample_id1, ctx->sample_id2, ctx->sample_id3);
+	LCM_BOOTPROF_LOG(msgbuf);
 	scnprintf(msgbuf, sizeof(msgbuf), "[LCM] Panel: %s sample", ctx->panel_sample);
 	LCM_BOOTPROF_LOG(msgbuf);
 	LCM_DEV_LOGI("---");

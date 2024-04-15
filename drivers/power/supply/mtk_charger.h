@@ -169,6 +169,7 @@ struct charger_custom_data {
 	int max_charger_voltage;
 	int max_charger_voltage_setting;
 	int min_charger_voltage;
+	int vbus_sw_ovp_voltage;
 
 	int usb_charger_current;
 	int ac_charger_current;

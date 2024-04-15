@@ -472,6 +472,9 @@ static int disp_c3d_wait_irq(void)
 			C3DFLOW_LOG("wait_event_interruptible ---\n");
 			C3DFLOW_LOG("get_irq = 1, wake up, ret = %d\n", ret);
 		} else {
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+#endif
 			DDPINFO("%s: interrupted unexpected\n", __func__);
 		}
 	} else {

@@ -813,6 +813,12 @@ config LEDS_RT4539
 	help
 	  Say Y here to include support for RT4539 LED controller.
 
+config LEDS_RT4539_ANDROID_USERDEBUG
+	bool "Android userdebug build for RT4539 LED controller"
+	depends on LEDS_RT4539
+	help
+	  Say Y here to enable the support of Android userdebug build for RT4539 LED controller
+
 comment "LED driver for blink(1) USB RGB LED is under Special HID drivers (HID_THINGM)"
 
 config LEDS_BLINKM
@@ -901,7 +907,7 @@ config LEDS_SPI_BYTE
 config LEDS_TI_LMU_COMMON
 	tristate "LED driver for TI LMU"
 	depends on LEDS_CLASS
-	depends on REGMAP
+	select REGMAP
 	help
 	  Say Y to enable the LED driver for TI LMU devices.
 	  This supports common features between the TI LM3532, LM3631, LM3632,

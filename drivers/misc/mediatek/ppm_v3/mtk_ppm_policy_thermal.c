@@ -61,6 +61,22 @@ end:
 }
 EXPORT_SYMBOL(mt_ppm_cpu_thermal_protect);
 
+static unsigned int (*mt_cpufreq_get_cur_phy_freq_no_lock_cb)(unsigned int);
+void ppm_cpufreq_get_cur_phy_freq_no_lock_register(unsigned int (*cb)(unsigned int))
+{
+	mt_cpufreq_get_cur_phy_freq_no_lock_cb = cb;
+}
+EXPORT_SYMBOL(ppm_cpufreq_get_cur_phy_freq_no_lock_register);
+
+unsigned int ppm_cpufreq_get_cur_phy_freq_no_lock_get(int i)
+{
+	if (!mt_cpufreq_get_cur_phy_freq_no_lock_cb) {
+		ppm_ver("ppm_cpufreq_get_cur_volt_cb not init\n");
+		return 0;
+	}
+	return mt_cpufreq_get_cur_phy_freq_no_lock_cb(i);
+}
+
 unsigned int mt_ppm_thermal_get_min_power(void)
 {
 	return (unsigned int)ppm_get_min_pwr_idx();
@@ -103,7 +119,7 @@ unsigned int mt_ppm_thermal_get_cur_power(void)
 		else
 			cluster_status[i].freq_idx = ppm_main_freq_to_idx(
 					i,
-					mt_cpufreq_get_cur_phy_freq_no_lock(i),
+					ppm_cpufreq_get_cur_phy_freq_no_lock_get(i),
 					CPUFREQ_RELATION_L);
 
 		ppm_ver("[%d] core = %d, freq_idx = %d\n",

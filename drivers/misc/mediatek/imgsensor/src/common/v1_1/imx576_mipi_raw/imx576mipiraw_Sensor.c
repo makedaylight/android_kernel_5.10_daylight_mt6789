@@ -388,7 +388,7 @@ static kal_uint16 imx576_table_write_cmos_sensor(kal_uint16 *para,
 
 static void set_dummy(void)
 {
-	LOG_INF("dummyline = %d, dummypixels = %d\n",
+	pr_debug("dummyline = %d, dummypixels = %d\n",
 		imgsensor.dummy_line, imgsensor.dummy_pixel);
 
 	write_cmos_sensor_8(0x0104, 0x01);
@@ -403,7 +403,7 @@ static void set_max_framerate(UINT16 framerate, kal_bool min_framelength_en)
 
 	kal_uint32 frame_length = imgsensor.frame_length;
 
-	LOG_INF("framerate = %d, min framelength should enable %d\n",
+	pr_debug("framerate = %d, min framelength should enable %d\n",
 		framerate, min_framelength_en);
 
 	frame_length = imgsensor.pclk / framerate * 10 / imgsensor.line_length;
@@ -457,7 +457,7 @@ static void write_shutter(kal_uint16 shutter)
 	write_cmos_sensor_8(0x0202, (shutter >> 8) & 0xFF);
 	write_cmos_sensor_8(0x0203, shutter  & 0xFF);
 	write_cmos_sensor_8(0x0104, 0x00);
-	LOG_INF("Exit! shutter =%d, framelength =%d\n",
+	pr_debug("Exit! shutter =%d, framelength =%d\n",
 		shutter, imgsensor.frame_length);
 
 }	/*	write_shutter  */
@@ -563,7 +563,7 @@ static kal_uint16 set_gain(kal_uint16 gain)
 	spin_lock(&imgsensor_drv_lock);
 	imgsensor.gain = reg_gain;
 	spin_unlock(&imgsensor_drv_lock);
-	LOG_INF("gain = %d, reg_gain = 0x%x\n ", gain, reg_gain);
+	pr_debug("gain = %d, reg_gain = 0x%x\n ", gain, reg_gain);
 
 	write_cmos_sensor_8(0x0104, 0x01);
 	write_cmos_sensor_8(0x0204, (reg_gain>>8) & 0xFF);
@@ -2006,7 +2006,7 @@ static kal_uint32 set_video_mode(UINT16 framerate)
 static kal_uint32 set_auto_flicker_mode(kal_bool enable, UINT16 framerate)
 {
 	if (enable != imgsensor.autoflicker_en)
-		LOG_INF("enable = %d, framerate = %d\n", enable, framerate);
+		pr_debug("enable = %d, framerate = %d\n", enable, framerate);
 	spin_lock(&imgsensor_drv_lock);
 	if (enable) /* enable auto flicker */
 		imgsensor.autoflicker_en = KAL_TRUE;
@@ -2022,7 +2022,7 @@ static kal_uint32 set_max_framerate_by_scenario(
 {
 	kal_uint32 frame_length;
 
-	LOG_INF("scenario_id = %d, framerate = %d\n", scenario_id, framerate);
+	pr_debug("scenario_id = %d, framerate = %d\n", scenario_id, framerate);
 
 	switch (scenario_id) {
 	case MSDK_SCENARIO_ID_CAMERA_PREVIEW:
@@ -2158,7 +2158,7 @@ static kal_uint32 set_max_framerate_by_scenario(
 		imgsensor.min_frame_length = imgsensor.frame_length;
 		spin_unlock(&imgsensor_drv_lock);
 		set_dummy();
-		LOG_INF(
+		pr_debug(
 			"error scenario_id = %d, we use preview scenario\n",
 			scenario_id);
 		break;

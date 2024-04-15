@@ -24,8 +24,8 @@
 #include "clkchk-mt6893.h"
 
 #define BUG_ON_CHK_ENABLE	1
-#define CHECK_VCORE_FREQ	1
-
+#define CHECK_VCORE_FREQ	0
+static unsigned int suspend_cnt;
 /*
  * clkchk dump_regs
  */
@@ -551,7 +551,21 @@ static bool is_pll_chk_bug_on(void)
 /*
  * init functions
  */
+static bool suspend_retry(bool reset_cnt)
+{
+	if (reset_cnt == true) {
+		suspend_cnt = 0;
+		return true;
+	}
 
+	suspend_cnt++;
+	pr_notice("%s: suspend cnt: %d\n", __func__, suspend_cnt);
+
+	if (suspend_cnt < 2)
+		return false;
+
+	return true;
+}
 static struct clkchk_ops clkchk_mt6893_ops = {
 	.get_all_regnames = get_all_mt6893_regnames,
 	.get_spm_pwr_status_array = get_spm_pwr_status_array,
@@ -562,10 +576,12 @@ static struct clkchk_ops clkchk_mt6893_ops = {
 	.get_vf_table = get_vf_table,
 	.get_vcore_opp = get_vcore_opp,
 	.devapc_dump = devapc_dump,
+	.suspend_retry = suspend_retry,
 };
 
 static int clk_chk_mt6893_probe(struct platform_device *pdev)
 {
+	suspend_cnt = 0;
 	init_regbase();
 
 	set_clkchk_ops(&clkchk_mt6893_ops);

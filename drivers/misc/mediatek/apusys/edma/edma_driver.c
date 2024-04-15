@@ -167,6 +167,8 @@ int edma_send_cmd(int cmd, void *hnd, struct apusys_device *adev)
 		}
 	case APUSYS_CMD_PREEMPT:
 		return result;
+	case APUSYS_CMD_VALIDATE:
+		return result;
 	default:
 		break;
 	}
@@ -354,16 +356,23 @@ static int edma_probe(struct platform_device *pdev)
 		edma_create_sysfs(dev);
 	}
 #endif
+	edma_device->ws = wakeup_source_register(NULL, "apu_edma");
+	if (!edma_device->ws) {
+		ret = -ENOMEM;
+		goto dev_out;
+	}
+
 	edma_initialize(edma_device);
 	pr_notice("edma probe done\n");
 
 	return 0;
 
 #ifdef _EDMA_DEV
-
 dev_out:
-
 	edma_unreg_chardev(edma_device);
+	return ret;
+#else
+dev_out:
 	return ret;
 #endif
 
@@ -372,6 +381,8 @@ dev_out:
 static int edma_remove(struct platform_device *pdev)
 {
 	struct edma_device *edma_device = platform_get_drvdata(pdev);
+
+	wakeup_source_unregister(edma_device->ws);
 
 	apu_power_device_unregister(EDMA);
 #ifdef _EDMA_DEV

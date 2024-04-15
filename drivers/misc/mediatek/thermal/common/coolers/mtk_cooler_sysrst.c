@@ -64,10 +64,16 @@ struct thermal_cooling_device *cdev, unsigned long *state)
 static int sysrst_cpu_set_cur_state(
 struct thermal_cooling_device *cdev, unsigned long state)
 {
-#if IS_ENABLED(CONFIG_LVTS_DYNAMIC_ENABLE_REBOOT)
+//#if IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
+#ifdef CONFIG_LVTS_DYNAMIC_ENABLE_REBOOT
 	int tpcb = mtk_thermal_get_temp(MTK_THERMAL_SENSOR_AP);
-#endif
+//#endif
 
+//#else
+//#if IS_ENABLED(CONFIG_LVTS_DYNAMIC_ENABLE_REBOOT)
+//	int tpcb = mtk_thermal_get_temp(MTK_THERMAL_SENSOR_AP);
+//#endif
+#endif
 	cl_dev_sysrst_state = state;
 
 	if (cl_dev_sysrst_state == 1) {
@@ -77,8 +83,11 @@ struct thermal_cooling_device *cdev, unsigned long state)
 		tscpu_printk("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
 		tscpu_printk("*****************************************\n");
 		tscpu_printk("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-
-#if IS_ENABLED(CONFIG_LVTS_DYNAMIC_ENABLE_REBOOT)
+//#if IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
+#ifdef CONFIG_LVTS_DYNAMIC_ENABLE_REBOOT
+//#else
+//#if IS_ENABLED(CONFIG_LVTS_DYNAMIC_ENABLE_REBOOT)
+//#endif
 		if (tpcb > DYNAMIC_REBOOT_TRIP_TEMP) {
 			tscpu_printk("SW reset! tpcb = %d\n", tpcb);
 			BUG_ON(1);

@@ -3274,7 +3274,7 @@ static SIMPLE_DEV_PM_OPS(mt6360_pmu_chg_pm_ops,
 			 mt6360_pmu_chg_suspend, mt6360_pmu_chg_resume);
 
 static const struct of_device_id __maybe_unused mt6360_pmu_chg_of_id[] = {
-	{ .compatible = "mediatek,mt6360_pmu_chg", },
+	//{ .compatible = "mediatek,mt6360_pmu_chg", },
 	{ .compatible = "mediatek,mt6360_chg", },
 	{},
 };

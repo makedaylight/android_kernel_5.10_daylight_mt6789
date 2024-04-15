@@ -676,6 +676,7 @@ struct mtk_vcodec_dev {
 	int venc_port_cnt;
 	int vdec_port_idx[MTK_VDEC_HW_NUM];
 	int venc_port_idx[MTK_VENC_HW_NUM];
+	struct mtk_tf_info *tf_info;
 	struct vcodec_perf *vdec_tput;
 	struct vcodec_perf *venc_tput;
 	//struct vcodec_config *vdec_cfg;
@@ -700,6 +701,7 @@ struct mtk_vcodec_dev {
 
 	unsigned int svp_mtee;
 	unsigned int unique_domain;
+	int num_of_cores;
 };
 
 static inline struct mtk_vcodec_ctx *fh_to_ctx(struct v4l2_fh *fh)

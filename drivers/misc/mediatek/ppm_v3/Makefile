@@ -22,7 +22,8 @@ ccflags-y += \
 	-I$(srctree)/drivers/misc/mediatek/thermal/inc/			\
 	-I$(srctree)/drivers/misc/mediatek/include/leakage_table_v2	\
 	-I$(srctree)/drivers/misc/mediatek/cpufreq_v2/inc \
-	-I$(srctree)/drivers/gpu/drm/mediatek/mediatek_v2
+	-I$(srctree)/drivers/gpu/drm/mediatek/mediatek_v2 \
+	-I$(srctree)/drivers/misc/mediatek/pbm
 
 ifneq ($(CONFIG_FPGA_EARLY_PORTING),y)
 
@@ -40,6 +41,8 @@ else ifneq ($(strip $(CONFIG_MTK_PLAT_POWER_MT6761)),)
 mtk_ppm_v3-objs += mtk_ppm_platform_6761.o mtk_ppm_cobra_algo_6761.o mtk_ppm_power_data_6761.o
 else ifneq ($(strip $(CONFIG_MTK_PLAT_POWER_MT6739)),)
 mtk_ppm_v3-objs += mtk_ppm_platform_6739.o mtk_ppm_cobra_algo_6739.o mtk_ppm_power_data_6739.o
+else ifneq ($(strip $(CONFIG_MTK_PLAT_POWER_6893)),)
+mtk_ppm_v3-objs += mtk_ppm_platform_6893.o mtk_ppm_cobra_algo_6893.o mtk_ppm_power_data_6893.o
 endif
 
 else

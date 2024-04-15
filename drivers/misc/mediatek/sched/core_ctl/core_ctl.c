@@ -25,7 +25,9 @@
 #include "sched_avg.h"
 #include <sched_sys_common.h>
 #include <thermal_interface.h>
-
+#if IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
+extern int get_immediate_tslvts1_1_wrap(void);
+#endif
 #define TAG "core_ctl"
 
 struct ppm_table {
@@ -317,6 +319,17 @@ static void set_min_cpus(struct cluster_data *cluster, unsigned int val)
 	spin_unlock_irqrestore(&state_lock, flags);
 	wake_up_core_ctl_thread(cluster);
 }
+
+static void set_thermal_up_thres(struct cluster_data *cluster, unsigned int val)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&state_lock, flags);
+	cluster->thermal_up_thres = val;
+	spin_unlock_irqrestore(&state_lock, flags);
+	wake_up_core_ctl_thread(cluster);
+}
+
 
 static void set_max_cpus(struct cluster_data *cluster, unsigned int val)
 {
@@ -628,6 +641,17 @@ unlock:
 EXPORT_SYMBOL(core_ctl_force_pause_cpu);
 
 /* ==================== sysctl node ======================== */
+static ssize_t store_thermal_up_thres(struct cluster_data *state,
+		const char *buf, size_t threshold)
+{
+	unsigned int val;
+
+	if (sscanf(buf, "%u\n", &val) != 1)
+		return -EINVAL;
+
+	set_thermal_up_thres(state, val);
+	return threshold;
+}
 
 static ssize_t store_min_cpus(struct cluster_data *state,
 		const char *buf, size_t count)
@@ -903,7 +927,7 @@ core_ctl_attr_rw(core_ctl_boost);
 core_ctl_attr_rw(enable);
 core_ctl_attr_ro(global_state);
 core_ctl_attr_ro(ppm_state);
-core_ctl_attr_ro(thermal_up_thres);
+core_ctl_attr_rw(thermal_up_thres);
 
 static struct attribute *default_attrs[] = {
 	&min_cpus.attr,
@@ -1135,6 +1159,8 @@ static inline void core_ctl_main_algo(void)
 		prev_cluster = &cluster_state[big_cluster->cluster_id - 1];
 #if IS_ENABLED(CONFIG_MTK_THERMAL_INTERFACE)
 		big_cpu_ts = get_cpu_temp(big_cluster->first_cpu);
+#elif IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
+		big_cpu_ts = get_immediate_tslvts1_1_wrap();
 #endif
 
 		/*

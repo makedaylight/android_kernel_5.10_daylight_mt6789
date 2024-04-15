@@ -472,6 +472,10 @@ int adsp_reset(void)
 	for (cid = 0; cid < get_adsp_core_total(); cid++) {
 		pdata = adsp_cores[cid];
 
+		/* v1: adsp mpu info reinit */
+		if (adspsys->desc->version == 1)
+			adsp_update_mpu_memory_info(pdata);
+
 		reinit_completion(&pdata->done);
 		adsp_core_start(cid);
 		ret = wait_for_completion_timeout(&pdata->done, HZ);

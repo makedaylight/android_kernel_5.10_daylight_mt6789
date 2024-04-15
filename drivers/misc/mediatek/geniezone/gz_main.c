@@ -961,6 +961,7 @@ static long _gz_ioctl(struct file *filep, unsigned int cmd, void __user *arg,
 	TZ_RESULT ret = 0;
 	struct user_shm_param shm_data;
 	struct user_chm_fd_to_hd_param cparam;
+	struct user_adjust_nop_pri param;
 	KREE_SHAREDMEM_HANDLE shm_handle = 0;
 
 	if (_IOC_TYPE(cmd) != MTEE_IOC_MAGIC)
@@ -1069,6 +1070,26 @@ static long _gz_ioctl(struct file *filep, unsigned int cmd, void __user *arg,
 
 	case MTEE_CMD_ADJUST_WQ_ATTR:
 		ret = gz_manual_adjust_trusty_wq_attr(arg);
+		break;
+
+	case TRUSTY_NOP_SET_PRI:
+		KREE_DEBUG("cmd = TRUSTY_NOP_SET_PRI\n");
+		err = copy_from_user(&param, arg, sizeof(param));
+		if (err) {
+			KREE_ERR("[%s]copy_from_user fail(0x%x)\n", __func__, err);
+			return err;
+		}
+
+		if (IS_ERR_OR_NULL(tz_system_dev)) {
+			KREE_ERR("GZ KREE is still not initialized!\n");
+			return -ENODEV;
+		}
+
+		err = trusty_nop_set_switch_pri(tz_system_dev->dev.parent, param.policy);
+		if(err != 0) {
+			KREE_ERR("Failed to trusty_nop_set_switch_pri %d\n", err);
+			return err;
+		}
 		break;
 
 	default:

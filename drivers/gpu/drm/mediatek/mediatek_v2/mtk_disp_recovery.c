@@ -645,6 +645,12 @@ static int mtk_drm_esd_check_worker_kthread(void *data)
 			ret = wait_event_interruptible(
 				esd_ctx->check_task_wq,
 				atomic_read(&esd_ctx->check_wakeup));
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+			if (ret < 0) {
+				DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+				continue;
+			}
+#endif
 			mtk_drm_idlemgr_kick(__func__, &mtk_crtc->base, 1);
 			atomic_set(&esd_ctx->int_te_event, 0);
 			ret = wait_event_interruptible_timeout(
@@ -655,10 +661,16 @@ static int mtk_drm_esd_check_worker_kthread(void *data)
 			DDPINFO("%s, wait te time:%d, esd:%d\n",
 				__func__, HZ - ret,  atomic_read(&esd_ctx->check_wakeup));
 			if (ret < 0) {
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+				DDPMSG("[%s][%d] wait_event_interruptible_timeout return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+#endif
 				DDPINFO("[ESD]check thread waked up accidently\n");
 				continue;
 			}
 			if (ret == 0 && esd_ctx->chk_active) {
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+				DDPMSG("[%s][%d] wait_event_interruptible_timeout time out !!!\n", __func__, __LINE__);
+#endif
 				DDPPR_ERR("%s: internal TE time out:%d, ret:%llu, esd:%d\n",
 					__func__, HZ, ret,
 					atomic_read(&esd_ctx->check_wakeup));
@@ -682,6 +694,9 @@ static int mtk_drm_esd_check_worker_kthread(void *data)
 				(atomic_read(&esd_ctx->target_time) ||
 				 esd_ctx->chk_mode == READ_EINT));
 			if (ret < 0) {
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+				DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+#endif
 				DDPINFO("[ESD]check thread waked up accidently\n");
 				continue;
 			}

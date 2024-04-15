@@ -66,10 +66,14 @@ static ssize_t gpu_debug_write(char *FromUser, size_t sz, void *priv)
 	ret = -EPERM;
 	if (!kstrtouint(FromUser, 0, &enable_time)) {
 		if (enable_time > 0) {
+#if !IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
 			mtk_gpueb_power_modle_cmd(1);
+#endif
 			mtk_swpm_gpu_pm_start();
 		} else {
+#if !IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
 			mtk_gpueb_power_modle_cmd(0);
+#endif
 			mtk_ltr_gpu_pmu_stop();
 		}
 		swpm_gpu_debug = (enable_time) ? true : false;

@@ -29,7 +29,7 @@
 #if IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
 #include <mt-plat/aee.h>
 #endif
-
+#include <linux/suspend.h>
 
 #include "ccci_hif_dpmaif_v1.h"
 #include "dpmaif_reg_v1.h"
@@ -181,6 +181,7 @@ static int dpmaif_wait_resume_done(void)
 			CCCI_NORMAL_LOG(-1, TAG,
 				"[%s] warning: suspend_flag = 1; (cnt: %d)",
 				__func__, cnt);
+			pm_system_wakeup();
 			return -1;
 		}
 	}
@@ -4644,6 +4645,10 @@ static int dpmaif_pre_stop(unsigned char hif_id)
 {
 	if (hif_id != DPMAIF_HIF_ID)
 		return -1;
+
+	if (dpmaif_ctrl->dpmaif_state == HIFDPMAIF_STATE_PWROFF
+		|| dpmaif_ctrl->dpmaif_state == HIFDPMAIF_STATE_MIN)
+		return 0;
 
 	dpmaif_stop_hw();
 

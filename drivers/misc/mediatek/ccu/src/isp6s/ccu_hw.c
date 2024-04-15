@@ -533,7 +533,7 @@ int ccu_power(struct ccu_power_s *power)
 	int ret = 0;
 	int32_t timeout = 10;
 
-	LOG_DBG("+:%s,(0x%llx)(0x%llx)\n", __func__, ccu_base, camsys_base);
+	LOG_DBG("+:%s,(0x%llx)(0x%llx)\n", __func__, (uint64_t)ccu_base, (uint64_t)camsys_base);
 	LOG_DBG("power->bON: %d\n", power->bON);
 
 	if (power->bON == 1) {
@@ -559,6 +559,7 @@ int ccu_power(struct ccu_power_s *power)
 		/*use user space buffer*/
 		ccu_write_reg(ccu_base, SPREG_02_LOG_DRAM_ADDR1,
 			power->workBuf.mva_log[0]);
+
 		ccu_write_reg(ccu_base, SPREG_03_LOG_DRAM_ADDR2,
 			power->workBuf.mva_log[1]);
 
@@ -1407,7 +1408,7 @@ void *ccu_da_to_va(u64 da, int len)
 	uint32_t mva_offset;
 
 	if (bin_mem == NULL) {
-		LOG_ERR("failed lookup da(%lx), bin_mem NULL", da);
+		LOG_ERR("failed lookup da(%llx), bin_mem NULL", da);
 		return NULL;
 	}
 
@@ -1416,28 +1417,28 @@ void *ccu_da_to_va(u64 da, int len)
 	if (da < CCU_CACHE_BASE) {
 		offset = da;
 		if ((offset >= 0) && ((offset + len) < CCU_PMEM_SIZE)) {
-			LOG_INF_MUST("da(0x%lx) to va(0x%lx)",
-				da, pmem_base + offset);
+			LOG_INF_MUST("da(0x%llx) to va(0x%llx)",
+				da, (uint64_t)(pmem_base + offset));
 			return (uint32_t *)(pmem_base + offset);
 		}
 	} else if (da >= CCU_CORE_DMEM_BASE) {
 		offset = da - CCU_CORE_DMEM_BASE;
 		if ((offset >= 0) && ((offset + len) < CCU_DMEM_SIZE)) {
-			LOG_INF_MUST("da(0x%lx) to va(0x%lx)",
-				da, dmem_base + offset);
+			LOG_INF_MUST("da(0x%llx) to va(0x%llx)",
+				da, (uint64_t)(dmem_base + offset));
 			return (uint32_t *)(dmem_base + offset);
 		}
 	} else {
 		offset = da - CCU_CACHE_BASE;
 		if ((offset >= 0) &&
 		((offset + len) < CCU_CTRL_BUF_TOTAL_SIZE)) {
-			LOG_INF_MUST("da(0x%lx) to va(0x%lx)",
-				da, bin_mem->va + mva_offset + offset);
+			LOG_INF_MUST("da(0x%llx) to va(0x%llx)",
+				da, (uint64_t)(bin_mem->va + mva_offset + offset));
 			return (uint32_t *)(bin_mem->va + mva_offset + offset);
 		}
 	}
 
-	LOG_ERR("failed lookup da(%x) len(%x) to va, offset(%x)", da, offset);
+	LOG_ERR("failed lookup da(%llx) to va, offset(%x)", da, offset);
 	return NULL;
 }
 

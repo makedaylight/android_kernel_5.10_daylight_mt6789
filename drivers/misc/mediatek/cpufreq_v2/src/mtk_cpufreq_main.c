@@ -1129,11 +1129,13 @@ static int _mt_cpufreq_verify(struct cpufreq_policy_data *policy)
 	if (!ret) {
 		p->idx_opp_ppm_base = cpu_dvfs_get_idx_by_freq(p, policy->min);
 		p->idx_opp_ppm_limit = cpu_dvfs_get_idx_by_freq(p, policy->max);
+#ifndef DISABLE_CPUFREQ_LIMIT_LOG
 		pr_info("update cpufreq limit idx min %d---max %d,freq min %d ---max %d\n",
 		p->idx_opp_ppm_base,
 		p->idx_opp_ppm_limit,
 		policy->min,
 		policy->max);
+#endif
 	}
 
 	return ret;
@@ -1370,7 +1372,11 @@ static struct freq_attr *_mt_cpufreq_attr[] = {
 };
 
 static struct cpufreq_driver _mt_cpufreq_driver = {
+#ifdef GOV_PER_POLICY
+	.flags = CPUFREQ_ASYNC_NOTIFICATION | CPUFREQ_NEED_UPDATE_LIMITS | CPUFREQ_HAVE_GOVERNOR_PER_POLICY,
+#else
 	.flags = CPUFREQ_ASYNC_NOTIFICATION | CPUFREQ_NEED_UPDATE_LIMITS,
+#endif
 	.verify = _mt_cpufreq_verify,
 	.target = _mt_cpufreq_target,
 	.init = _mt_cpufreq_init,
@@ -1747,6 +1753,11 @@ static int _mt_cpufreq_pdrv_probe(struct platform_device *pdev)
 #endif
 	mt_ppm_get_cluster_ptpod_fix_freq_idx_register(mt_cpufreq_find_Vboot_idx);
 #endif
+
+#ifdef CPUFREQ_REGISTER_CALLBACK
+	ppm_register_cb();
+#endif
+
 	pm_notifier(_mt_cpufreq_pm_callback, 0);
 	FUNC_EXIT(FUNC_LV_MODULE);
 

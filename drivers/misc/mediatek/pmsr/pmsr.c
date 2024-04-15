@@ -123,8 +123,11 @@ static ssize_t remote_data_write(struct file *fp, const char __user *userbuf,
 	if (kstrtou32_from_user(userbuf, count, 10, v))
 		return -EFAULT;
 
+#if !IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
 	if (!tinfo)
 		return -EFAULT;
+#endif
+
 
 	if ((void *)v == (void *)&cfg.pause) {
 #if IS_ENABLED(CONFIG_MTK_TINYSYS_SCMI)

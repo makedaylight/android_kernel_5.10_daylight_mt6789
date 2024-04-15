@@ -68,6 +68,8 @@ static int ufs_abort_aee_count;
 #define ufshcd_eh_in_progress(h) \
 	((h)->eh_flags & UFSHCD_EH_IN_PROGRESS)
 
+#define UFSHCD_STATE_RESET		0	/* ufshcd.c */
+
 static struct ufs_dev_fix ufs_mtk_dev_fixups[] = {
 	UFS_FIX(UFS_ANY_VENDOR, UFS_ANY_MODEL,
 		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM | UFS_DEVICE_QUIRK_DELAY_AFTER_LPM),
@@ -203,6 +205,14 @@ static void ufs_mtk_init_reset(struct ufs_hba *hba)
 				   "crypto_rst");
 }
 
+static bool ufs_mtk_has_ufshci_perf_heuristic(struct ufs_hba *hba) {
+
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+
+	return (host && host->caps & UFS_MTK_CAP_UFSHCI_PERF_HURISTIC);
+}
+
+
 static int ufs_mtk_hce_enable_notify(struct ufs_hba *hba,
 				     enum ufs_notify_change_status status)
 {
@@ -242,6 +252,12 @@ static int ufs_mtk_hce_enable_notify(struct ufs_hba *hba,
 		ufshcd_writel(hba,
 			(ufshcd_readl(hba, REG_UFS_XOUFS_CTRL) | 0x80),
 			REG_UFS_XOUFS_CTRL);
+	} else if (status == POST_CHANGE) {
+		if (ufs_mtk_has_ufshci_perf_heuristic(hba)) {
+			/* [31:16] PRE_ULTRA, [15:0] ULTRA */
+			ufshcd_writel(hba, 0x00400080,
+				REG_UFS_AXI_W_ULTRA_THR);
+		}
 	}
 
 	return 0;
@@ -656,6 +672,11 @@ static void ufs_mtk_init_host_caps(struct ufs_hba *hba)
 	if (of_property_read_bool(np, "mediatek,ufs-delay-after-vcc-off"))
 		host->caps |= UFS_MTK_CAP_DEALY_AFTER_VCC_OFF;
 
+	if (of_property_read_bool(np, "mediatek,ufs-perf-huristic")) {
+		host->caps |= UFS_MTK_CAP_UFSHCI_PERF_HURISTIC;
+		dev_info(hba->dev, "PERF HURISTIC enabled caps=0x%x", host->caps);
+	}
+
 	dev_info(hba->dev, "caps: 0x%x", host->caps);
 
 	boot_node = of_parse_phandle(np, "bootmode", 0);
@@ -726,6 +747,13 @@ static int ufs_mtk_setup_clocks(struct ufs_hba *hba, bool on,
 		ufs_mtk_setup_ref_clk(hba, on);
 		ufs_mtk_boost_crypt(hba, on);
 		ufs_mtk_pm_qos(hba, on);
+
+		if (ufs_mtk_has_ufshci_perf_heuristic(hba)) {
+			if (!hba->outstanding_reqs) {
+				host->ufs_mtk_qcmd_w_cmd_cnt = 0;
+				host->ufs_mtk_qcmd_r_cmd_cnt = 0;
+			}
+		}
 		if (host->qos_enabled)
 			ufs_mtk_biolog_clk_gating(on);
 	}
@@ -743,6 +771,127 @@ static bool ufs_mtk_is_data_cmd(struct scsi_cmnd *cmd)
 		return true;
 
 	return false;
+}
+
+enum {
+	READ_CMD	= 0,
+	WRITE_CMD	= 1,
+	OTHER_CMD	= 2,
+};
+static inline bool ufs_mtk_get_cmd_type(struct scsi_cmnd *cmd)
+{
+	char cmd_op = cmd->cmnd[0];
+
+
+	if (cmd_op == WRITE_10 || cmd_op == WRITE_16 || cmd_op == WRITE_6 ||
+		cmd->sc_data_direction == DMA_TO_DEVICE)
+		return WRITE_CMD;
+
+	if (cmd_op == READ_10 || cmd_op == READ_16 || cmd_op == READ_6 ||
+		cmd->sc_data_direction == DMA_FROM_DEVICE)
+		return READ_CMD;
+
+	return OTHER_CMD;
+
+
+}
+bool ufs_mtk_perf_heurisic_if_allow_cmd(struct ufs_hba *hba, struct scsi_cmnd *cmd)
+{
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+	unsigned long flags;
+	u32 tr_doorbell;
+	u32 cmd_type;
+
+	if (!ufs_mtk_has_ufshci_perf_heuristic(hba))
+		return true;	/* Check rw commands only and allow all other commands. */
+
+	spin_lock_irqsave(hba->host->host_lock, flags);
+
+	tr_doorbell = ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL);
+
+	cmd_type = ufs_mtk_get_cmd_type(cmd);
+
+	if (cmd_type == READ_CMD || cmd_type == WRITE_CMD) {
+
+		if (!host->ufs_mtk_qcmd_r_cmd_cnt && !host->ufs_mtk_qcmd_w_cmd_cnt) {
+			/* Case: no on-going r or w commands. */
+			if (cmd_type == WRITE_CMD)
+				host->ufs_mtk_qcmd_w_cmd_cnt++;
+			else
+				host->ufs_mtk_qcmd_r_cmd_cnt++;
+		}
+		else {
+			if (cmd_type == WRITE_CMD) {
+				if (host->ufs_mtk_qcmd_r_cmd_cnt){
+					spin_unlock_irqrestore(hba->host->host_lock, flags);
+					dev_dbg(hba->dev, "%s: write - %d, read - %d, cmdp - 0x%x, cmd - %d , outstanding - 0x%x, doorbell - 0x%x \n", __func__, host->ufs_mtk_qcmd_w_cmd_cnt, host->ufs_mtk_qcmd_r_cmd_cnt, cmd, cmd->cmnd[0], hba->outstanding_reqs, tr_doorbell);
+					return false;
+
+				}
+				host->ufs_mtk_qcmd_w_cmd_cnt++;
+			} else {
+				if (host->ufs_mtk_qcmd_w_cmd_cnt) {
+					spin_unlock_irqrestore(hba->host->host_lock, flags);
+					dev_dbg(hba->dev, "%s: write - %d, read - %d, cmdp - 0x%x, cmd - %d , outstanding - 0x%x, doorbell - 0x%x \n", __func__, host->ufs_mtk_qcmd_w_cmd_cnt, host->ufs_mtk_qcmd_r_cmd_cnt, cmd, cmd->cmnd[0], hba->outstanding_reqs, tr_doorbell);
+					return false;
+				}
+				host->ufs_mtk_qcmd_r_cmd_cnt++;
+			}
+		}
+	}
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+
+	return true;
+}
+
+
+static inline void ufs_mtk_perf_heurisic_req_done(struct ufs_hba *hba, struct scsi_cmnd *cmd)
+{
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+	unsigned long flags;
+	u32 cmd_type;
+
+	if (!ufs_mtk_has_ufshci_perf_heuristic(hba))
+		return;
+
+	cmd_type = ufs_mtk_get_cmd_type(cmd);
+
+	spin_lock_irqsave(hba->host->host_lock, flags);
+
+	if (cmd_type == READ_CMD)
+		host->ufs_mtk_qcmd_r_cmd_cnt--;
+	else if (cmd_type == WRITE_CMD)
+		host->ufs_mtk_qcmd_w_cmd_cnt--;
+
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+}
+
+
+void ufs_mtk_trace_vh_perf_huristic_ctrl(void *data, struct ufs_hba *hba,
+		struct ufshcd_lrb *lrbp, int *err)
+{
+	struct scsi_cmnd *cmd = lrbp->cmd;
+
+	if (!ufs_mtk_perf_heurisic_if_allow_cmd(hba, cmd)){
+		lrbp->cmd = NULL;
+		*err = SCSI_MLQUEUE_HOST_BUSY;
+		scsi_dma_unmap(cmd);
+	}
+	return;
+}
+
+void ufs_mtk_trace_vh_abort_sucess_ctrl(void *data, struct ufs_hba *hba,
+		struct ufshcd_lrb *lrbp)
+{
+	if (ufs_mtk_has_ufshci_perf_heuristic(hba)) {
+		struct scsi_cmnd *cmd = lrbp->cmd;
+		char cmd_op = cmd->cmnd[0];
+
+		dev_info(hba->dev, "abort success triggered - tag: %d, cmd: %d \n",
+			lrbp->task_tag, cmd_op);
+		ufs_mtk_perf_heurisic_req_done(hba, cmd);
+	}
+	return;
 }
 
 #define UFS_VEND_SAMSUNG  (1 << 0)
@@ -848,6 +997,10 @@ static void ufs_mtk_trace_vh_send_command_vend_ss(void *data, struct ufs_hba *hb
 static void ufs_mtk_trace_vh_send_command(void *data, struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 {
 	struct scsi_cmnd *cmd = lrbp->cmd;
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+	bool timeout = false;
+	ktime_t start;
+	u32 val;
 
 	if (!cmd)
 		return;
@@ -855,6 +1008,366 @@ static void ufs_mtk_trace_vh_send_command(void *data, struct ufs_hba *hba, struc
 	if (ufs_mtk_is_data_cmd(cmd)) {
 		ufs_mtk_biolog_send_command(lrbp->task_tag, cmd);
 		ufs_mtk_biolog_check(1);
+	}
+	if (!ufs_mtk_has_ufshci_perf_heuristic(hba) || !host->ufs_mtk_qcmd_r_cmd_cnt)
+		return;
+
+	start = ktime_get();
+	ufshcd_writel(hba, 0xA2, REG_UFS_DEBUG_SEL);
+
+	do {
+		val = ufshcd_readl(hba, REG_UFS_PROBE);
+		val = (val >> 10) & 0x3F;
+
+		/* DATA IN = 0x22 */
+		if (val != 0x22) {
+			timeout = false;
+			break;
+		}
+
+		if (ktime_to_us(ktime_sub(ktime_get(), start)) > 10000) {
+			timeout = true;
+			dev_info(hba->dev, "%s: wait DATAIN timeout\n",
+		 	__func__);
+			break;
+		}
+	} while (1);
+
+}
+static void ufs_mtk_trace_vh_send_command_post_change(void *data, struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+{
+	struct scsi_cmnd *cmd = lrbp->cmd;
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+
+	if (!cmd)
+		return;
+
+	if (ufs_mtk_has_ufshci_perf_heuristic(hba) &&
+	    host->ufs_mtk_qcmd_r_cmd_cnt)
+		udelay(1);
+}
+static inline int ufshcd_get_tr_ocs(struct ufshcd_lrb *lrbp)
+{
+	return le32_to_cpu(lrbp->utr_descriptor_ptr->header.dword_2) & MASK_OCS;
+}
+
+static int ufshcd_is_resp_upiu_valid(struct ufs_hba *hba,
+				      struct ufshcd_lrb *lrbp, int index)
+{
+	u32 word;
+	u8 val;
+	bool err = false;
+
+	if (hba->ufshcd_state != UFSHCD_STATE_OPERATIONAL)
+		return 0;
+
+	word = be32_to_cpu(lrbp->ucd_rsp_ptr->header.dword_0);
+
+	/* Check tag anyway */
+	val = word & 0xff;
+	if (val != lrbp->task_tag || val != index) {
+		dev_info(hba->dev, "inv. tag, upiu: 0x%x, lrbp: 0x%x, outstanding: 0x%x, cmd: 0x%x\n",
+			 val, lrbp->task_tag, index, lrbp->cmd->cmnd[0]);
+		err = true;
+		goto fatal;
+	}
+
+	val = lrbp->cmd->cmnd[0];
+
+	if (val != READ_10 && val != WRITE_10 &&
+		val != SYNCHRONIZE_CACHE)
+		return 0;
+
+	val = (word & 0x00ff0000) >> 16;
+	if (val) {
+		dev_info(hba->dev, "inv. flag: 0x%x\n", val);
+		err = true;
+		goto fatal;
+	}
+
+	val = (word & 0x0000ff00) >> 8;
+	if (val != lrbp->lun) {
+		dev_info(hba->dev, "inv. lun: upiu: 0x%x, lrbp: 0x%x\n",
+			 val, lrbp->lun);
+		err = true;
+		goto fatal;
+	}
+
+	if (lrbp->ucd_rsp_ptr->sr.residual_transfer_count) {
+		dev_info(hba->dev, "inv. rtc: 0x%x\n",
+			 lrbp->ucd_rsp_ptr->sr.residual_transfer_count);
+		err = true;
+		goto fatal;
+	}
+
+	if (lrbp->ucd_rsp_ptr->sr.reserved[0]) {
+		dev_info(hba->dev, "inv. reserved[0]: 0x%x\n",
+			 lrbp->ucd_rsp_ptr->sr.reserved[0]);
+		err = true;
+	}
+
+fatal:
+	if (err)
+		return (DID_ERROR << 16);
+
+	return 0;
+}
+
+static int ufshcd_wait_for_doorbell_clr(struct ufs_hba *hba,
+					u64 wait_timeout_usint, int tr_allowed,
+					int tm_allowed)
+{
+	unsigned long flags;
+	int ret = 0;
+	u32 tm_doorbell;
+	u32 tr_doorbell;
+	bool timeout = false, do_last_check = false;
+	ktime_t start;
+
+	ufshcd_hold(hba, false);
+	spin_lock_irqsave(hba->host->host_lock, flags);
+	/*
+	 * Wait for all the outstanding tasks/transfer requests.
+	 * Verify by checking the doorbell registers are clear.
+	 */
+	start = ktime_get();
+	do {
+
+		tm_doorbell = ufshcd_readl(hba, REG_UTP_TASK_REQ_DOOR_BELL);
+		tr_doorbell = ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL);
+		if ((hweight_long(tr_doorbell) <= tr_allowed) &&
+			(hweight_long(tm_doorbell) <= tm_allowed)) {
+			timeout = false;
+			break;
+		} else if (do_last_check) {
+			break;
+		}
+
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+		schedule();
+		if (ktime_to_us(ktime_sub(ktime_get(), start)) >
+		    wait_timeout_usint) {
+			timeout = true;
+			/*
+			 * We might have scheduled out for long time so make
+			 * sure to check if doorbells are cleared by this time
+			 * or not.
+			 */
+			do_last_check = true;
+		}
+		spin_lock_irqsave(hba->host->host_lock, flags);
+	} while (tm_doorbell || tr_doorbell);
+
+	if (timeout) {
+		dev_err(hba->dev,
+			"%s: timedout waiting for doorbell to clear (tm=0x%x, tr=0x%x)\n",
+			__func__, tm_doorbell, tr_doorbell);
+		ret = -EBUSY;
+	}
+
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+	ufshcd_release(hba);
+	return ret;
+}
+
+
+void ufs_mtk_pltfrm_host_sw_rst(struct ufs_hba *hba, u32 target)
+{
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+
+	dev_dbg(hba->dev, "ufs_mtk_host_sw_rst: 0x%x\n", target);
+
+	if (target & SW_RST_TARGET_UFSHCI)
+		reset_control_assert(host->hci_reset);
+
+	if (target & SW_RST_TARGET_UFSCPT)
+		reset_control_assert(host->crypto_reset);
+
+	if (target & SW_RST_TARGET_UNIPRO)
+		reset_control_assert(host->unipro_reset);
+
+	usleep_range(100, 110);
+
+	if (target & SW_RST_TARGET_UFSHCI)
+		reset_control_deassert(host->unipro_reset);
+
+	if (target & SW_RST_TARGET_UFSCPT)
+		reset_control_deassert(host->crypto_reset);
+
+	if (target & SW_RST_TARGET_UNIPRO)
+		reset_control_deassert(host->hci_reset);
+
+	usleep_range(100, 110);
+}
+
+static inline int
+ufshcd_get_req_rsp(struct utp_upiu_rsp *ucd_rsp_ptr)
+{
+	return be32_to_cpu(ucd_rsp_ptr->header.dword_0) >> 24;
+}
+
+static void ufs_mtk_err_handler(struct work_struct *work)
+{
+	struct ufs_mtk_host *host = container_of(work, struct ufs_mtk_host, err_handle_work);
+	struct ufs_hba *hba = host->hba;
+	unsigned long reqs_post, flags;
+	int ret;
+
+	down(&hba->host_sem);
+	spin_lock_irqsave(hba->host->host_lock, flags);
+	ufshcd_set_eh_in_progress(hba);
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+
+	ufshcd_err_handling_prepare(hba);
+	/* Complete requests that have door-bell cleared by h/w */
+	ufshcd_complete_requests(hba);
+	spin_lock_irqsave(hba->host->host_lock, flags);
+	//if (hba->ufshcd_state != UFSHCD_STATE_ERROR)
+	hba->ufshcd_state = UFSHCD_STATE_RESET;
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+
+	ufshcd_wait_for_doorbell_clr(hba, DOORBELL_CLR_TOUT_US,
+					 2, 0);
+	ufshcd_wait_for_doorbell_clr(hba, 10000, 1, 0);
+
+	usleep_range(5000, 5100);
+
+	ret = ufshcd_dme_set(hba,
+		UIC_ARG_MIB_SEL(VS_UNIPROPOWERDOWNCONTROL, 0), 1);
+	if (ret)
+		dev_info(hba->dev, "ir_hdlr: failed to set unipro pdn ctrl\n");
+
+	ufshcd_hba_stop(hba);
+
+	ufs_mtk_pltfrm_host_sw_rst(hba, SW_RST_TARGET_UFSHCI);
+	ret = ufshcd_hba_enable(hba);
+	if (ret)
+		dev_err(hba->dev, "ufshcd_hba_enable failed\n");
+
+	ret = ufshcd_dme_set(hba,
+		UIC_ARG_MIB_SEL(VS_UNIPROPOWERDOWNCONTROL, 0), 0);
+	if (ret)
+		dev_info(hba->dev, "ir_hdlr: failed to clr unipro pdn ctrl\n");
+	ufshcd_set_link_active(hba);
+
+	ufshcd_make_hba_operational(hba);
+
+	reqs_post = hba->outstanding_reqs;
+	WARN_ON((reqs_post & 0x7FFFFFFF) != 0);
+
+	spin_lock_irqsave(hba->host->host_lock, flags);
+	ufshcd_clear_eh_in_progress(hba);
+
+	hba->ufshcd_state = UFSHCD_STATE_OPERATIONAL;
+
+	hba->saved_err = 0;
+	hba->saved_uic_err = 0;
+
+	host->read_write_hw_err = false;
+
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+	ufshcd_err_handling_unprepare(hba);
+	up(&hba->host_sem);
+	dev_info(hba->dev, "%s, error recovery done\n", __func__);
+
+}
+
+
+int ufs_mtk_check_upiu_error(struct ufs_hba *hba, struct ufshcd_lrb *lrbp, int index)
+{
+
+	int result = 0;
+	int ocs = 0;
+	u32 ocs_err_status;
+	unsigned long flags;
+//	struct scsi_cmnd *cmd = lrbp->cmd;
+
+	if (!ufs_mtk_has_ufshci_perf_heuristic(hba))
+		return result;
+
+	ocs_err_status = ufshcd_readl(hba, REG_UFS_MTK_OCS_ERR_STATUS);
+	if (ocs_err_status & 0xC0000000) {
+		result = (DID_ERROR << 16);
+		dev_err(hba->dev, "inv. ocs: 0x%x, reqs: 0x%x\n",
+			 ocs_err_status, hba->outstanding_reqs);
+		goto out;
+	}
+
+	/* overall command status of utrd */
+	ocs = ufshcd_get_tr_ocs(lrbp);
+
+	if (ocs == OCS_SUCCESS) {
+		result = ufshcd_get_req_rsp(lrbp->ucd_rsp_ptr);
+		if (result == UPIU_TRANSACTION_RESPONSE)
+			result = ufshcd_is_resp_upiu_valid(hba, lrbp, index);
+	}
+
+out:
+	if (result) {
+		spin_lock_irqsave(hba->host->host_lock, flags);
+		hba->errors = INT_FATAL_ERRORS;
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+		hba->silence_err_logs = true;
+		dev_err(hba->dev, "%s, mtk error observd result - %d, ocs - %d\n",
+			__func__, result, ocs);
+	}
+	return result;
+}
+
+static void ufs_mtk_trace_vh_err_handler(void *data, struct ufs_hba *hba, bool *err_handled)
+{
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+
+	if (!ufs_mtk_has_ufshci_perf_heuristic(hba) || !host->read_write_hw_err)
+		return;
+
+	schedule_work(&host->err_handle_work);
+	if (err_handled)
+		*err_handled = true;
+}
+
+static void ufs_mtk_trace_vh_compl_rsp_check_done(void *data, struct ufs_hba *hba,
+	struct ufshcd_lrb *lrbp, bool *err_handled)
+{
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+	int tag = lrbp->task_tag;
+
+	if (ufs_mtk_check_upiu_error(hba, lrbp, tag))
+	{
+		if(err_handled)
+			*err_handled = true;
+		host->read_write_hw_err = true;
+		hba->silence_err_logs = true;
+
+		return;
+	}
+}
+
+static void ufs_mtk_trace_vh_err_print_ctrl(void *data, struct ufs_hba *hba, bool *skip)
+{
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+
+	if (!ufs_mtk_has_ufshci_perf_heuristic(hba))
+		return;
+
+	if (host->read_write_hw_err)
+	{
+		*skip = true;
+		return;
+	}
+}
+
+static void ufs_mtk_trace_vh_err_check_ctrl(void *data, struct ufs_hba *hba, bool *err_check)
+{
+	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
+
+	if (!ufs_mtk_has_ufshci_perf_heuristic(hba))
+		return;
+
+	if (host->read_write_hw_err)
+	{
+		*err_check = true;
+		return;
 	}
 }
 
@@ -872,6 +1385,8 @@ static void ufs_mtk_trace_vh_compl_command(void *data, struct ufs_hba *hba, stru
 
 	if (!cmd)
 		return;
+
+	ufs_mtk_perf_heurisic_req_done(hba, cmd);
 
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	outstanding_reqs = hba->outstanding_reqs;
@@ -920,6 +1435,34 @@ static struct tracepoints_table interests[] = {
 	{
 		.name = "android_vh_ufs_update_sdev",
 		.func = ufs_mtk_trace_vh_update_sdev
+	},
+	{
+		.name = "android_vh_ufs_perf_huristic_ctrl",
+		.func = ufs_mtk_trace_vh_perf_huristic_ctrl
+	},
+	{
+		.name = "android_vh_ufs_abort_success_ctrl",
+		.func = ufs_mtk_trace_vh_abort_sucess_ctrl
+	},
+	{
+		.name = "android_vh_ufs_send_command_post_change",
+		.func = ufs_mtk_trace_vh_send_command_post_change
+	},
+	{
+		.name = "android_vh_ufs_err_handler",
+		.func = ufs_mtk_trace_vh_err_handler
+	},
+	{
+		.name = "android_vh_ufs_compl_rsp_check_done",
+		.func = ufs_mtk_trace_vh_compl_rsp_check_done
+	},
+	{
+		.name = "android_vh_ufs_err_print_ctrl",
+		.func = ufs_mtk_trace_vh_err_print_ctrl
+	},
+	{
+		.name = "android_vh_ufs_err_check_ctrl",
+		.func = ufs_mtk_trace_vh_err_check_ctrl
 	},
 #if defined(CONFIG_UFSFEATURE)
 	{
@@ -1282,9 +1825,12 @@ ufs_mtk_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 	int length = 0;
 	void *data_ptr;
 	bool flag;
-	u32 att;
+	u32 att = 0;
 	u8 index = 0;
 	u8 *desc = NULL;
+#if defined(CONFIG_UFSFEATURE)
+	struct ufsf_feature *ufsf;
+#endif
 
 	ioctl_data = kzalloc(sizeof(*ioctl_data), GFP_KERNEL);
 	if (!ioctl_data) {
@@ -1305,8 +1851,12 @@ ufs_mtk_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 
 #if defined(CONFIG_UFSFEATURE)
 	if (ufsf_check_query(ioctl_data->opcode)) {
-		err = ufsf_query_ioctl(ufs_mtk_get_ufsf(hba), lun, buffer,
-				       ioctl_data, UFSFEATURE_SELECTOR);
+		ufsf = ufs_mtk_get_ufsf(hba);
+		if (!ufsf->check_init)
+			err = -ENODEV; /* ufsf is not supported in this device */
+		else
+			err = ufsf_query_ioctl(ufsf, lun, buffer,
+				ioctl_data, UFSFEATURE_SELECTOR);
 		goto out_release_mem;
 	}
 #endif
@@ -1349,6 +1899,12 @@ ufs_mtk_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 						    desc, &length);
 		break;
 	case UPIU_QUERY_OPCODE_READ_ATTR:
+		if (ioctl_data->buf_size != sizeof(u32)) {
+			dev_err(hba->dev, "buffer size must be %d for read attribute\n",
+					sizeof(u32));
+			err = -EINVAL;
+			goto out_release_mem;
+		}
 		switch (ioctl_data->idn) {
 		case QUERY_ATTR_IDN_BOOT_LU_EN:
 		case QUERY_ATTR_IDN_POWER_MODE:
@@ -1378,10 +1934,13 @@ ufs_mtk_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 		break;
 
 	case UPIU_QUERY_OPCODE_WRITE_ATTR:
-		err = copy_from_user(&att,
-				     buffer +
-				     sizeof(struct ufs_ioctl_query_data),
-				     sizeof(u32));
+		if (ioctl_data->buf_size != sizeof(u32)) {
+			dev_err(hba->dev, "buffer size must be %d for write attribute\n",
+					sizeof(u32));
+			err = -EINVAL;
+			goto out_release_mem;
+		}
+		err = copy_from_user(&att, ioctl_data->buffer, sizeof(u32));
 		if (err) {
 			dev_err(hba->dev,
 				"%s: Failed copying buffer from user, err %d\n",
@@ -1409,6 +1968,12 @@ ufs_mtk_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 		break;
 
 	case UPIU_QUERY_OPCODE_READ_FLAG:
+		if (ioctl_data->buf_size != sizeof(bool)) {
+			dev_err(hba->dev, "buffer size must be %d for read flag\n",
+					sizeof(bool));
+			err = -EINVAL;
+			goto out_release_mem;
+		}
 		switch (ioctl_data->idn) {
 		case QUERY_FLAG_IDN_FDEVICEINIT:
 		case QUERY_FLAG_IDN_PERMANENT_WPE:
@@ -1465,7 +2030,7 @@ ufs_mtk_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 	if (err)
 		dev_err(hba->dev, "%s: Failed copying back to user.\n",
 			__func__);
-	err = copy_to_user(buffer + sizeof(struct ufs_ioctl_query_data),
+	err = copy_to_user(ioctl_data->buffer,
 			   data_ptr, ioctl_data->buf_size);
 	if (err)
 		dev_err(hba->dev, "%s: err %d copying back to user.\n",
@@ -1645,6 +2210,8 @@ static int ufs_mtk_init(struct ufs_hba *hba)
 		goto out_variant_clear;
 
 	ufs_mtk_init_reset(hba);
+
+	INIT_WORK(&host->err_handle_work, ufs_mtk_err_handler);
 
 	/* Enable runtime autosuspend */
 	hba->caps |= UFSHCD_CAP_RPM_AUTOSUSPEND;

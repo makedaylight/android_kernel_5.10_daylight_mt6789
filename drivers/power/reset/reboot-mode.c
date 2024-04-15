@@ -19,6 +19,26 @@ struct mode_info {
 	struct list_head list;
 };
 
+static int reboot_mode_strcmp(const char *cs, const char *ct)
+{
+	unsigned char c1, c2;
+	int res = 0;
+
+	do {
+		c1 = *cs++;
+		c2 = *ct++;
+		res = c1 - c2;
+		if (res) {
+			if (c1 == (unsigned char)'_' && c2 == (unsigned char)' ') /* This is because we use '_' instead of ' ' */
+				res = 0;
+			else
+				return res;
+		}
+	} while (c1);
+
+	return res;
+}
+
 static unsigned int get_reboot_mode_magic(struct reboot_mode_driver *reboot,
 					  const char *cmd)
 {
@@ -30,7 +50,7 @@ static unsigned int get_reboot_mode_magic(struct reboot_mode_driver *reboot,
 		cmd = normal;
 
 	list_for_each_entry(info, &reboot->head, list) {
-		if (!strcmp(info->mode, cmd)) {
+		if (!reboot_mode_strcmp(info->mode, cmd)) {
 			magic = info->magic;
 			break;
 		}

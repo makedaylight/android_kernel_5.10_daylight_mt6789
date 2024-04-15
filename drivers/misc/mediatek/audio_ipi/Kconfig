@@ -7,3 +7,11 @@ config MTK_AUDIO_IPI
 	  with subsystem.
 	  This option depends on MediaTek in-house audio DSP support
 	  or audio feature support on MediaTek in-house DSP.
+
+config ADSP_VOIP_LEGACY
+	bool "Enable voip DL and UL support on same coreB"
+	depends on MTK_AUDIODSP_SUPPORT || CONFIG_MTK_AUDIO_IPI
+	default n
+	help
+	  New architecture support voip DL and UL on separate core
+	  but legacy chips with dual core adsp do not support this feature

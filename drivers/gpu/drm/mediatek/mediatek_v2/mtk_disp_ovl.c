@@ -818,8 +818,6 @@ static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 		if (priv->underflow_cnt % 1000 == 0) {
 			if (ovl->id == DDP_COMPONENT_OVL0 ||
 			    ovl->id == DDP_COMPONENT_OVL1) {
-				DDPAEE("[IRQ] %s:buffer underflow\n",
-					mtk_dump_comp_str(ovl));
 				mtk_smi_dbg_hang_detect("ovl-underflow");
 			}
 			mtk_ovl_dump(ovl);

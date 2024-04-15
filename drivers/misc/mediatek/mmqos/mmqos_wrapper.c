@@ -27,6 +27,10 @@ static struct wrapper_data wrapper_data_mt6853 = {
 	.max_ostd = 40,
 	.icc_dst_id = SLAVE_COMMON(0),
 };
+static struct wrapper_data wrapper_data_mt6893 = {
+	.max_ostd = 40,
+	.icc_dst_id = SLAVE_COMMON(0),
+};
 static struct wrapper_data wrapper_data_mt6895 = {
 	.max_ostd = 40,
 	.icc_dst_id = SLAVE_COMMON(0),
@@ -231,6 +235,10 @@ static const struct of_device_id of_mmqos_wrapper_match_tbl[] = {
 		.data = &wrapper_data_mt6853,
 	},
 	{
+		.compatible = "mediatek,mt6893-mmqos-wrapper",
+		.data = &wrapper_data_mt6893,
+	},
+	{
 		.compatible = "mediatek,mt6895-mmqos-wrapper",
 		.data = &wrapper_data_mt6895,
 	},
@@ -283,9 +291,7 @@ static int __init mtk_mmqos_wrapper_init(void)
 
 	status = platform_driver_register(&mmqos_wrapper_drv);
 	if (status) {
-		pr_notice(
-			"Failed to register MMQoS wrapper driver(%d)\n",
-			status);
+		pr_notice("Failed to register MMQoS wrapper driver(%d)\n",status);
 		return -ENODEV;
 	}
 	return 0;

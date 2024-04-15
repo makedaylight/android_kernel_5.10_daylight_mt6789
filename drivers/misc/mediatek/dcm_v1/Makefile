@@ -16,12 +16,19 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/dcm_v1/inc/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/
 
+ifneq (, $(filter $(strip $(CONFIG_MEDIATEK_DCM_MT6768)),m y))
 obj-$(CONFIG_MEDIATEK_DCM_MT6768) += mediatek_dcm.o
 mediatek_dcm-y += mtk_dcm.o
 mediatek_dcm-y += mt6768_dcm_autogen.o
 mediatek_dcm-y += mt6768_dcm_internal.o
-
+else ifneq (, $(filter $(strip $(CONFIG_MEDIATEK_DCM_MT6885)),m y))
+obj-$(CONFIG_MEDIATEK_DCM_MT6885) += mediatek_dcm.o
+mediatek_dcm-y += mtk_dcm.o
+mediatek_dcm-y += mt6885_dcm_autogen.o
+mediatek_dcm-y += mt6885_dcm_internal.o
+else ifneq (, $(filter $(strip $(CONFIG_MEDIATEK_DCM_V1)),m y))
 obj-$(CONFIG_MEDIATEK_DCM_V1) += mediatek_dcm_v1.o
 mediatek_dcm_v1-y += mtk_dcm.o
 mediatek_dcm_v1-y += dcm_v1_autogen.o
 mediatek_dcm_v1-y += dcm_v1_internal.o
+endif

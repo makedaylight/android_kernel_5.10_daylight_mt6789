@@ -346,6 +346,8 @@ extern void aee_rr_rec_ppm_waiting_for_pbm(u8 val);
 extern void ppm_init_qos_request(void);
 #endif
 
+extern unsigned int ppm_cpufreq_get_cur_phy_freq_no_lock_get(int i);
+
 #define trace_ppm_update(a, b, c, d) do { } while (0)
 static inline int arch_get_cluster_cpus(struct cpumask *cpus, int cluster_id)
 {

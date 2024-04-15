@@ -80,7 +80,7 @@ struct spm_wakesrc_irq_list mt6893_spm_wakesrc_irqs[] = {
 	/* mtk-kpd */
 	{ WAKE_SRC_STA1_KP_IRQ_B, "mediatek,kp", 0, 0},
 	/* mt_wdt */
-	{ WAKE_SRC_STA1_APWDT_EVENT_B, "mediatek,toprgu", 0, 0},
+	{ WAKE_SRC_STA1_APWDT_EVENT_B, "mediatek,mt6893-wdt", 0, 0},
 	/* BTCVSD_ISR_Handle */
 	{ WAKE_SRC_STA1_CONN2AP_SPM_WAKEUP_B, "mediatek,mtk-btcvsd-snd", 0, 0},
 	/* BTIF_WAKEUP_IRQ */
@@ -108,7 +108,7 @@ struct spm_wakesrc_irq_list mt6893_spm_wakesrc_irqs[] = {
 	/* gps */
 	{ WAKE_SRC_STA1_CONN2AP_SPM_WAKEUP_B, "mediatek,mt6885-gps", 6, 0},
 	/* CCIF_AP_DATA */
-	{ WAKE_SRC_STA1_CCIF0_EVENT_B, "mediatek,ap_ccif0", 0, 0},
+	{ WAKE_SRC_STA1_CCIF0_EVENT_B, "mediatek,ccci_ccif", 0, 0},
 	/* SCP IPC0 */
 	{ WAKE_SRC_STA1_SC_SCP2SPM_WAKEUP_B, "mediatek,scp", 0, 0},
 	/* SCP IPC1 */

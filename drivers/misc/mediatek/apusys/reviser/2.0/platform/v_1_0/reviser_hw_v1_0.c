@@ -725,6 +725,8 @@ int reviser_set_context_ID(void *drvinfo, int type,
 
 	if (!reviser_is_power(drvinfo)) {
 		LOG_ERR("Can Not set contxet when power disable\n");
+		apu_reviser_aee("Reviser is not pwr on [%s][%u]\n",
+			__func__, __LINE__);
 		ret = -EINVAL;
 		return ret;
 	}
@@ -981,6 +983,36 @@ int reviser_check_int_valid(void *drvinfo)
 
 		ret = -1;
 	}
+
+	return ret;
+}
+
+int reviser_init_ip(void)
+{
+	int ret = 0;
+	struct arm_smccc_res res;
+
+#if APUSYS_SECURE
+	arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
+			MTK_APUSYS_KERNEL_OP_REVISER_INIT_IP,
+			0, 0, 0, 0, 0, 0, &res);
+	ret = res.a0;
+
+	if (ret) {
+		if (ret == -EIO)
+			LOG_ERR("Unsupported secure monitor call\n");
+		else
+			LOG_ERR("Init IP fail\n");
+
+		return -1;
+	}
+
+#else
+	LOG_ERR("APUSYS_SECURE is not enable\n");
+	return -1;
+#endif
+
+	LOG_DEBUG("Init IP\n");
 
 	return ret;
 }

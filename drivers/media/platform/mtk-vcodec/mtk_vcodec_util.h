@@ -11,6 +11,7 @@
 #include <aee.h>
 #include <linux/types.h>
 #include <linux/dma-direction.h>
+#include <linux/math64.h>
 #include <linux/mtk_vcu_controls.h>
 #include <linux/timer.h>
 #include "vcodec_ipi_msg.h"

@@ -908,13 +908,17 @@ int reviser_table_get_vlm(void *drvinfo,
 		/* Set HW remap table */
 		if (reviser_table_set_remap(drvinfo, ctx)) {
 			LOG_ERR("Set Remap Fail and power off\n");
-			if (reviser_power_off(drvinfo))
+			if (reviser_power_off(drvinfo)) {
+				apu_reviser_aee("Reviser pwr off fail [%s][%u]\n",
+					__func__, __LINE__);
 				LOG_ERR("Power OFF Fail\n");
+			}
 
 			goto free_vlm;
 		}
 	} else {
 		LOG_ERR("Power ON Fail\n");
+		apu_reviser_aee("Reviser pwr on fail [%s][%u]\n", __func__, __LINE__);
 		goto free_vlm;
 	}
 
@@ -995,6 +999,8 @@ int reviser_table_free_vlm(void *drvinfo, uint32_t ctx)
 
 power_off:
 	if (reviser_power_off(drvinfo)) {
+		apu_reviser_aee("Reviser pwr off fail [%s][%u]\n",
+			__func__, __LINE__);
 		LOG_ERR("Power OFF Fail\n");
 		ret = -1;
 	}

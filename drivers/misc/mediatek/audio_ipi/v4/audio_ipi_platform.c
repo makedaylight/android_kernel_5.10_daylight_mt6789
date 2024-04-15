@@ -56,9 +56,15 @@ uint32_t audio_get_dsp_id(const uint8_t task)
 	case TASK_SCENE_FM_ADSP:
 	case TASK_SCENE_PHONE_CALL_SUB:
 	case TASK_SCENE_BLECALLDL:
-	case TASK_SCENE_VOIP:
 		dsp_id = AUDIO_OPENDSP_USE_HIFI3_A;
-		break;
+                break;
+	case TASK_SCENE_VOIP:
+#if IS_ENABLED(CONFIG_ADSP_VOIP_LEGACY)
+		dsp_id = AUDIO_OPENDSP_USE_HIFI3_B;
+#else
+		dsp_id = AUDIO_OPENDSP_USE_HIFI3_A;
+#endif
+                break;
 	case TASK_SCENE_PHONE_CALL:
 	case TASK_SCENE_RECORD:
 	case TASK_SCENE_CAPTURE_UL1:

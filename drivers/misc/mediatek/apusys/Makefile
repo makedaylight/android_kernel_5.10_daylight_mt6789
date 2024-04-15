@@ -40,7 +40,7 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/apusys/debug/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/apusys/midware/$(APUSYS_VERSION_MIDWARE)/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/apusys/midware/$(APUSYS_VERSION_MIDWARE)/ap/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/apusys/midware/$(APUSYS_VERSION_MIDWARE)/rv/
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/apusys/midware/$(APUSYS_VERSION_MIDWARE)/ap/dummy/
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/apusys/midware/$(APUSYS_VERSION_MIDWARE)/ap/sample/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/apusys/$(UTIL_DIR)/
 
 apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/mdw_mem_drv.o
@@ -69,7 +69,7 @@ apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/ap/mdw_ap_queue_deadline.o
 apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/ap/mdw_ap_queue_norm.o
 apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/ap/mdw_ap_rsc.o
 apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/ap/mdw_ap_tag.o
-apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/ap/dummy/mdw_dmy.o
+apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/ap/sample/mdw_sample.o
 apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/rv/mdw_rv.o
 apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/rv/mdw_rv_cmd.o
 apusys-objs += midware/$(APUSYS_VERSION_MIDWARE)/rv/mdw_rv_dev.o

@@ -1981,6 +1981,18 @@ static int mt6375_plug_in(struct charger_device *chgdev)
 	struct mt6375_chg_platform_data *pdata = dev_get_platdata(ddata->dev);
 
 	mt_dbg(ddata->dev, "++\n");
+
+	//reset EOC and TE here for single/basic charger
+	ret = mt6375_chg_field_set(ddata, F_IEOC, pdata->ieoc);
+	if (ret < 0)
+		dev_warn(ddata->dev, "failed to set IEOC=%d\n", pdata->ieoc);
+	ret = mt6375_chg_field_set(ddata, F_EOC_RST, 1);
+	if (ret < 0)
+		dev_warn(ddata->dev, "failed to do EOC_RST\n");
+	ret = mt6375_chg_field_set(ddata, F_TE, true);
+	if (ret < 0)
+		dev_warn(ddata->dev, "failed to enable TE\n");
+
 	if (pdata->wdt_en) {
 		ret = mt6375_chg_field_set(ddata, F_WDT_EN, 1);
 		if (ret < 0) {

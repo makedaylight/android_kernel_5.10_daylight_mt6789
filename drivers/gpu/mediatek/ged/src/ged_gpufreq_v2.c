@@ -443,6 +443,7 @@ int ged_gpufreq_commit(int oppidx, int commit_type, int *bCommited)
 	}
 	/* DCS policy disabled */
 	else {
+		oppidx = (oppidx > g_min_working_oppidx)? g_min_working_oppidx: oppidx;
 		freq = (g_working_table == NULL) ?
 			gpufreq_get_freq_by_idx(TARGET_DEFAULT, oppidx)
 			: g_working_table[oppidx].freq;

@@ -13,9 +13,16 @@
 #if IS_ENABLED(CONFIG_MEDIATEK_DCM_V1)
 #include <dcm_v1_internal.h>
 #include <dcm_v1_autogen.h>
-#else
+#endif
+
+#if IS_ENABLED(CONFIG_MEDIATEK_DCM_MT6768)
 #include <mt6768_dcm_internal.h>
 #include <mt6768_dcm_autogen.h>
+#endif
+
+#if IS_ENABLED(CONFIG_MEDIATEK_DCM_MT6885)
+#include <mt6885_dcm_internal.h>
+#include <mt6885_dcm_autogen.h>
 #endif
 
 #include <mtk_dcm.h>

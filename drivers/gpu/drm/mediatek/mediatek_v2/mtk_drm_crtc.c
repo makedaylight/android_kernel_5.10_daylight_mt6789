@@ -89,6 +89,7 @@ static struct mtk_drm_property mtk_crtc_property[CRTC_PROP_MAX] = {
 	{DRM_MODE_PROP_ATOMIC, "MSYNC2_0_ENABLE", 0, UINT_MAX, 0},
 	{DRM_MODE_PROP_ATOMIC, "SKIP_CONFIG", 0, UINT_MAX, 0},
 	{DRM_MODE_PROP_ATOMIC, "OVL_DSI_SEQ", 0, UINT_MAX, 0},
+	{DRM_MODE_PROP_ATOMIC, "HWC_ALL_OVERLAYS_DISABLED", 0, UINT_MAX, 0},
 };
 
 static struct cmdq_pkt *sb_cmdq_handle;
@@ -818,6 +819,12 @@ static int mtk_crtc_enable_vblank_thread(void *data)
 		ret = wait_event_interruptible(
 			mtk_crtc->vblank_enable_wq,
 			atomic_read(&mtk_crtc->vblank_enable_task_active));
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#endif
 
 		DDP_MUTEX_LOCK(&mtk_crtc->lock, __func__, __LINE__);
 		if (mtk_crtc->enabled)
@@ -1844,6 +1851,11 @@ static void mtk_crtc_cwb_set_sec(struct drm_crtc *crtc)
 			cwb_info->is_sec = true;
 		}
 	}
+	if (mtk_crtc->sec_on) {
+		DDPINFO("%s:%d skip cwb addon connect due to sec on\n",
+				__func__, __LINE__);
+		cwb_info->is_sec = true;
+	}
 }
 
 static void calc_mml_config(struct drm_crtc *crtc,
@@ -2277,6 +2289,12 @@ _mtk_crtc_wb_addon_module_connect(
 	if (index != 0 || mtk_crtc_is_dc_mode(crtc) ||
 		!state->prop_val[CRTC_PROP_OUTPUT_ENABLE])
 		return;
+
+	if (mtk_crtc->sec_on) {
+		DDPINFO("%s:%d skip wb addon connect due to sec on\n",
+				__func__, __LINE__);
+		return;
+	}
 
 	addon_data = mtk_addon_get_scenario_data(__func__, crtc,
 						WDMA_WRITE_BACK_OVL);
@@ -3166,6 +3184,7 @@ static void mtk_crtc_update_hrt_state(struct drm_crtc *crtc,
 	struct drm_display_mode *mode = NULL;
 	unsigned int max_fps = 0;
 	struct mtk_drm_private *priv = crtc->dev->dev_private;
+	int en = 0;
 
 	DDPINFO("%s bw=%d, last_hrt_req=%d, overlap=%d\n",
 			__func__, bw, mtk_crtc->qos_ctx->last_hrt_req, frame_weight);
@@ -3186,11 +3205,23 @@ static void mtk_crtc_update_hrt_state(struct drm_crtc *crtc,
 			int en = 1;
 
 			output_comp = mtk_ddp_comp_request_output(mtk_crtc);
-			if (output_comp)
+			if (output_comp) {
+				DDPMSG("set MMCLK back, and enable underrun irq\n");
 				mtk_ddp_comp_io_cmd(output_comp, NULL, SET_MMCLK_BY_DATARATE, &en);
+				mtk_ddp_comp_io_cmd(output_comp, NULL, IRQ_UNDERRUN, &en);
+			}
 			atomic_set(&mtk_crtc->force_high_step, 0);
 		}
 	} else {
+		if (mtk_crtc->force_high_enabled != 0) {
+			en = 1;
+			output_comp = mtk_ddp_comp_request_output(mtk_crtc);
+			if (output_comp) {
+				/* enable dsi underrun irq*/
+				DDPMSG("enable underrun irq after force_high_step set to 0\n");
+				mtk_ddp_comp_io_cmd(output_comp, NULL, IRQ_UNDERRUN, &en);
+			}
+		}
 		mtk_crtc->force_high_enabled = 0;
 	}
 
@@ -4147,7 +4178,14 @@ static int _mtk_crtc_cmdq_retrig(void *data)
 		ret = wait_event_interruptible(mtk_crtc->trigger_cmdq,
 			atomic_read(&mtk_crtc->cmdq_trig));
 		if (ret < 0)
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		{
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#else
 			DDPPR_ERR("wait %s fail, ret=%d\n", __func__, ret);
+#endif
 		atomic_set(&mtk_crtc->cmdq_trig, 0);
 
 		mtk_crtc_clear_wait_event(crtc);
@@ -4653,6 +4691,12 @@ static ktime_t mtk_check_preset_fence_timestamp(struct drm_crtc *crtc)
 			if (ret <= 0)
 				DDPMSG("%s wait event fail, ret = %d\n", __func__, ret);
 		} while (mtk_crtc->pf_time == prev_time && is_frame_mode);
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret <= 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible_timeout return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			dump_stack();
+		}
+#endif
 
 		cur_time = mtk_crtc->pf_time;
 		DDPINFO("%s:fps:%d,report pf time:%lldus, prev:%lldus\n",
@@ -4887,6 +4931,12 @@ static int mtk_drm_signal_fence_worker_kthread(void *data)
 		ret = wait_event_interruptible(
 			mtk_crtc->signal_fence_task_wq
 			, atomic_read(&mtk_crtc->cmdq_done));
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#endif
 			atomic_set(&mtk_crtc->cmdq_done, 0);
 		_ddp_cmdq_cb(mtk_crtc->cb_data);
 	}
@@ -5650,10 +5700,19 @@ long mtk_crtc_wait_status(struct drm_crtc *crtc, bool status, long timeout)
 	long ret;
 	struct mtk_drm_crtc *mtk_crtc = to_mtk_crtc(crtc);
 
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+	do {
+		ret = wait_event_interruptible_timeout(mtk_crtc->crtc_status_wq,
+					mtk_crtc->enabled == status, timeout);
+		if (ret <= 0)
+			DDPMSG("[%s][%d] wait_event_interruptible_timeout return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+	} while (ret < 0);
+#else
 	ret = wait_event_interruptible_timeout(mtk_crtc->crtc_status_wq,
 				 mtk_crtc->enabled == status, timeout);
 	if (ret <= 0)
 		DDPMSG("%s wait event fail, ret = %d\n", __func__, ret);
+#endif
 	return ret;
 }
 
@@ -6258,7 +6317,14 @@ static int _mtk_crtc_check_trigger(void *data)
 		ret = wait_event_interruptible(mtk_crtc->trigger_event,
 			atomic_read(&mtk_crtc->trig_event_act));
 		if (ret < 0)
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		{
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#else
 			DDPPR_ERR("wait %s fail, ret=%d\n", __func__, ret);
+#endif
 		atomic_set(&mtk_crtc->trig_event_act, 0);
 
 		__mtk_check_trigger(mtk_crtc);
@@ -6284,7 +6350,14 @@ static int _mtk_crtc_check_trigger_delay(void *data)
 		ret = wait_event_interruptible(mtk_crtc->trigger_delay,
 			atomic_read(&mtk_crtc->trig_delay_act));
 		if (ret < 0)
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		{
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#else
 			DDPPR_ERR("wait %s fail, ret=%d\n", __func__, ret);
+#endif
 		atomic_set(&mtk_crtc->trig_delay_act, 0);
 		atomic_set(&mtk_crtc->delayed_trig, 0);
 
@@ -7692,15 +7765,22 @@ int mtk_crtc_check_out_sec(struct drm_crtc *crtc)
 }
 
 /*====for MTEE SVP=====*/
+static int is_tzmp2_enabled = -1;
 bool is_tzmp2_enable(void)
 {
-	struct device_node *dt_node;
+	if (is_tzmp2_enabled == -1) {
+		struct device_node *dt_node;
 
-	dt_node = of_find_node_by_name(NULL, TZMP2_DT_NAME);
-	if (!dt_node)
-		return false;
-
-	return true;
+		dt_node = of_find_node_by_name(NULL, TZMP2_DT_NAME);
+		if (!dt_node)
+			is_tzmp2_enabled = 0;
+		else
+			is_tzmp2_enabled = 1;
+		DDPINFO("%s: is_tzmp2_enabled = %d", __func__, is_tzmp2_enabled);
+	}
+	if (is_tzmp2_enabled == 1)
+		return true;
+	return false;
 }
 
 static int mtk_mtee_sec_flow_by_cmdq(struct cmdq_pkt *cmdq_handle, struct mtk_ddp_comp *comp,
@@ -8999,6 +9079,7 @@ void mtk_drm_crtc_plane_disable(struct drm_crtc *crtc, struct drm_plane *plane,
 		DISP_SLOT_SUBTRACTOR_WHEN_FREE(mtk_get_plane_slot_idx(mtk_crtc, plane_index)));
 	cmdq_pkt_write(cmdq_handle, mtk_crtc->gce_obj.base, addr, sub, ~0);
 #endif
+
 	DDPINFO("%s-\n", __func__);
 }
 
@@ -9505,8 +9586,10 @@ int mtk_crtc_gce_flush(struct drm_crtc *crtc, void *gce_cb,
 		wb_cb_data = kmalloc(sizeof(*wb_cb_data), GFP_KERNEL);
 
 		mtk_crtc_pkt_create(&handle, crtc, client);
-		cmdq_pkt_wfe(handle, mtk_crtc->gce_obj.event[EVENT_WDMA0_EOF]);
-		_mtk_crtc_wb_addon_module_disconnect(crtc, mtk_crtc->ddp_mode, handle);
+		if (!mtk_crtc->sec_on) {
+			cmdq_pkt_wfe(handle, mtk_crtc->gce_obj.event[EVENT_WDMA0_EOF]);
+			_mtk_crtc_wb_addon_module_disconnect(crtc, mtk_crtc->ddp_mode, handle);
+		}
 
 		wb_cb_data->cmdq_handle = handle;
 		wb_cb_data->crtc = crtc;
@@ -10902,6 +10985,12 @@ static int mtk_drm_cwb_monitor_thread(void *data)
 		ret = wait_event_interruptible(
 			mtk_crtc->cwb_wq,
 			atomic_read(&mtk_crtc->cwb_task_active));
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#endif
 		atomic_set(&mtk_crtc->cwb_task_active, 0);
 
 		cwb_info = mtk_crtc->cwb_info;
@@ -10967,6 +11056,12 @@ static int mtk_drm_fake_vsync_kthread(void *data)
 	while (1) {
 		ret = wait_event_interruptible(fake_vsync->fvsync_wq,
 				atomic_read(&fake_vsync->fvsync_active));
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#endif
 
 		mtk_crtc_vblank_irq(crtc);
 		usleep_range(16700, 17700);
@@ -11010,9 +11105,15 @@ static int dc_main_path_commit_thread(void *data)
 		if (ret == 0) {
 			atomic_set(&mtk_crtc->dc_main_path_commit_event, 0);
 			mtk_crtc_dc_prim_path_update(crtc);
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		} else if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+#else
 		} else {
 			DDPINFO("wait dc commit event interrupted, ret = %d\n",
 				     ret);
+#endif
 		}
 		if (kthread_should_stop())
 			break;
@@ -11033,6 +11134,9 @@ static int mtk_drm_pf_release_thread(void *data)
 	ktime_t pf_time;
 	unsigned int fence_idx = 0;
 #endif
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+	int ret = 0;
+#endif
 
 	crtc = &mtk_crtc->base;
 	private = crtc->dev->dev_private;
@@ -11040,8 +11144,17 @@ static int mtk_drm_pf_release_thread(void *data)
 	sched_setscheduler(current, SCHED_RR, &param);
 
 	while (!kthread_should_stop()) {
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		ret = wait_event_interruptible(mtk_crtc->present_fence_wq,
+				 atomic_read(&mtk_crtc->pf_event));
+		if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#else
 		wait_event_interruptible(mtk_crtc->present_fence_wq,
 				 atomic_read(&mtk_crtc->pf_event));
+#endif
 		atomic_set(&mtk_crtc->pf_event, 0);
 
 		if (likely(mtk_drm_lcm_is_connect(mtk_crtc)))
@@ -11067,6 +11180,9 @@ static int mtk_drm_sf_pf_release_thread(void *data)
 	struct mtk_drm_private *private;
 	struct mtk_drm_crtc *mtk_crtc = (struct mtk_drm_crtc *)data;
 	struct drm_crtc *crtc;
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+	int ret = 0;
+#endif
 
 
 	crtc = &mtk_crtc->base;
@@ -11074,8 +11190,17 @@ static int mtk_drm_sf_pf_release_thread(void *data)
 	sched_setscheduler(current, SCHED_RR, &param);
 
 	while (!kthread_should_stop()) {
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		ret = wait_event_interruptible(mtk_crtc->sf_present_fence_wq,
+					 atomic_read(&mtk_crtc->sf_pf_event));
+		if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#else
 		wait_event_interruptible(mtk_crtc->sf_present_fence_wq,
 					 atomic_read(&mtk_crtc->sf_pf_event));
+#endif
 		atomic_set(&mtk_crtc->sf_pf_event, 0);
 
 #ifndef DRM_CMDQ_DISABLE

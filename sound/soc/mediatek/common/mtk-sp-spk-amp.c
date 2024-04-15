@@ -355,7 +355,6 @@ IS_ENABLED(CONFIG_MTK_SCP_AUDIO)
 EXPORT_SYMBOL(mtk_spk_recv_ipi_buf_from_dsp);
 
 static const struct i2c_device_id mtk_spk_i2c_id[] = {
-	{ "tfa9874", 0},
 	{ "speaker_amp", 0},
 	{}
 };

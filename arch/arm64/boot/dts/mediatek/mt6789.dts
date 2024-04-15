@@ -56,6 +56,7 @@
 
 	/* chosen */
 	chosen: chosen {
+#if 0
 		bootargs = "console=tty0 root=/dev/ram \
 			    loglevel=8 \
 			    8250.nr_uarts=4 \
@@ -64,6 +65,17 @@
 			    vmalloc=400M swiotlb=noforce \
 			    firmware_class.path=/vendor/firmware pelt=8\
 			    loop.max_part=7";
+#else
+		/* REMOVED: initcall_debug=1 */
+		/* REMOVED: loglevel=8 => MOVED to LK2 */
+		bootargs = "console=tty0 root=/dev/ram \
+			    8250.nr_uarts=4 \
+			    androidboot.hardware=mt6789 \
+			    transparent_hugepage=never \
+			    vmalloc=400M swiotlb=noforce \
+			    firmware_class.path=/vendor/firmware pelt=8\
+			    loop.max_part=7";
+#endif
 		atag,videolfb-fb_base_l = <0x7e605000>;
 		atag,videolfb-fb_base_h = <0x0>;
 		atag,videolfb-islcmfound = <1>;
@@ -2286,12 +2298,13 @@
 			reg = <0 0x10007000 0 0x100>;
 			reboot-mode {
 				compatible = "syscon-reboot-mode";
-				offset = <0x24>;
-				mask = <0xf>;
+				offset = <0x24>; /* MTK_WDT_NONRST_REG2 */
+				mask = <0xf>; /* MTK_WDT_NONRST2_BOOT_MASK */
 				mode-charger = <BOOT_CHARGER>;
 				mode-recovery = <BOOT_RECOVERY>;
 				mode-bootloader = <BOOT_BOOTLOADER>;
-				mode-dm-verity-dev-corrupt = <BOOT_DM_VERITY>;
+				//mode-dm-verity-dev-corrupt = <BOOT_DM_VERITY>;
+				mode-dm-verity_device_corrupted = <BOOT_DM_VERITY>; /* "dm-verity device corrupted": use '_' instead of ' ' */
 				mode-kpoc = <BOOT_KPOC>;
 				mode-ddr-reserve = <BOOT_DDR_RSVD>;
 				mode-meta = <BOOT_META>;

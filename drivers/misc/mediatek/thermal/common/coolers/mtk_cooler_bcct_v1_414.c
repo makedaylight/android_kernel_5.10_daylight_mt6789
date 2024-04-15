@@ -18,20 +18,48 @@
 #include <linux/uidgid.h>
 #include <linux/notifier.h>
 #include "mach/mtk_thermal.h"
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-#include <charger_type.h>
+//#if (CONFIG_MTK_GAUGE_VERSION == 30)
+//#include <charger_type.h>
 #include <mtk_charger.h>
 #include <mtk_battery.h>
-#else
-#include <tmp_battery.h>
-#include <charging.h>
-#endif
+//#else
+//#include <tmp_battery.h>
+//#include <charging.h>
+//#endif
 #include "mtk_disp_notify.h"
 #include <linux/fb.h>
 
 /* ************************************ */
 /* Weak functions */
 /* ************************************ */
+#define CONFIG_MTK_GAUGE_VERSION 30
+	struct charger_consumer {
+		struct device *dev;
+		void *cm;
+		struct notifier_block *pnb;
+		struct list_head list;
+		bool hv_charging_disabled;
+	};
+	enum charger_type {
+		CHARGER_UNKNOWN = 0,
+		STANDARD_HOST,		/* USB : 450mA */
+		CHARGING_HOST,
+		NONSTANDARD_CHARGER,	/* AC : 450mA~1A */
+		STANDARD_CHARGER,	/* AC : ~1A */
+		APPLE_2_1A_CHARGER, /* 2.1A apple charger */
+		APPLE_1_0A_CHARGER, /* 1A apple charger */
+		APPLE_0_5A_CHARGER, /* 0.5A apple charger */
+		WIRELESS_CHARGER,
+	};
+
+	struct charger_consumer __attribute__ ((weak))
+	*charger_manager_get_by_name(struct device *dev,
+		const char *supply_name)
+	{
+		pr_notice("E_WF: %s doesn't exist\n", __func__);
+		return NULL;
+	}
+
 	int __attribute__ ((weak))
 get_bat_charging_current_level(void)
 {
@@ -1177,13 +1205,12 @@ static int _cl_bcct_open(struct inode *inode, struct file *file)
 	return single_open(file, _cl_bcct_read, PDE_DATA(inode));
 }
 
-static const struct file_operations _cl_bcct_fops = {
-	.owner = THIS_MODULE,
-	.open = _cl_bcct_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.write = _cl_bcct_write,
-	.release = single_release,
+static const struct proc_ops _cl_bcct_fops = {
+	.proc_open = _cl_bcct_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_write = _cl_bcct_write,
+	.proc_release = single_release,
 };
 
 static ssize_t _cl_abcct_write(
@@ -1305,13 +1332,12 @@ static int _cl_abcct_open(struct inode *inode, struct file *file)
 	return single_open(file, _cl_abcct_read, PDE_DATA(inode));
 }
 
-static const struct file_operations _cl_abcct_fops = {
-	.owner = THIS_MODULE,
-	.open = _cl_abcct_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.write = _cl_abcct_write,
-	.release = single_release,
+static const struct proc_ops _cl_abcct_fops = {
+	.proc_open = _cl_abcct_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_write = _cl_abcct_write,
+	.proc_release = single_release,
 };
 
 static ssize_t _cl_abcct_lcmoff_write(
@@ -1411,13 +1437,12 @@ static int _cl_abcct_lcmoff_open(struct inode *inode, struct file *file)
 	return single_open(file, _cl_abcct_lcmoff_read, PDE_DATA(inode));
 }
 
-static const struct file_operations _cl_abcct_lcmoff_fops = {
-	.owner = THIS_MODULE,
-	.open = _cl_abcct_lcmoff_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.write = _cl_abcct_lcmoff_write,
-	.release = single_release,
+static const struct proc_ops _cl_abcct_lcmoff_fops = {
+	.proc_open = _cl_abcct_lcmoff_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_write = _cl_abcct_lcmoff_write,
+	.proc_release = single_release,
 };
 
 static void bcct_lcmoff_switch(int onoff)
@@ -1503,12 +1528,11 @@ static int _cl_chrlmt_open(struct inode *inode, struct file *file)
 	return single_open(file, _cl_chrlmt_read, PDE_DATA(inode));
 }
 
-static const struct file_operations _cl_chrlmt_fops = {
-	.owner = THIS_MODULE,
-	.open = _cl_chrlmt_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
+static const struct proc_ops _cl_chrlmt_fops = {
+	.proc_open = _cl_chrlmt_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release,
 };
 
 static int _cl_battery_status_read(struct seq_file *m, void *v)
@@ -1529,12 +1553,11 @@ static int _cl_battery_status_open(struct inode *inode, struct file *file)
 	return single_open(file, _cl_battery_status_read, PDE_DATA(inode));
 }
 
-static const struct file_operations _cl_battery_status_fops = {
-	.owner = THIS_MODULE,
-	.open = _cl_battery_status_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
+static const struct proc_ops _cl_battery_status_fops = {
+	.proc_open = _cl_battery_status_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release,
 };
 
 int mtk_cooler_is_abcct_unlimit(void)
@@ -1570,7 +1593,7 @@ static struct platform_driver mtk_cooler_bcct_driver = {
 		.owner  = THIS_MODULE,
 	},
 };
-static int __init mtkcooler_bcct_late_init(void)
+int  mtkcooler_bcct_late_init(void)
 {
 	int ret = 0;
 
@@ -1603,7 +1626,7 @@ fail:
 }
 #endif
 
-static int __init mtk_cooler_bcct_init(void)
+int  mtk_cooler_bcct_init(void)
 {
 	int err = 0;
 	int i;
@@ -1693,7 +1716,7 @@ err_unreg:
 	return err;
 }
 
-static void __exit mtk_cooler_bcct_exit(void)
+void  mtk_cooler_bcct_exit(void)
 {
 	mtk_cooler_bcct_dprintk("%s\n", __func__);
 
@@ -1721,8 +1744,8 @@ static void __exit mtk_cooler_bcct_exit(void)
 #endif
 }
 
-module_init(mtk_cooler_bcct_init);
-module_exit(mtk_cooler_bcct_exit);
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-late_initcall(mtkcooler_bcct_late_init);
-#endif
+//module_init(mtk_cooler_bcct_init);
+//module_exit(mtk_cooler_bcct_exit);
+//#if (CONFIG_MTK_GAUGE_VERSION == 30)
+//late_initcall(mtkcooler_bcct_late_init);
+//#endif

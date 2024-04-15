@@ -474,6 +474,10 @@ static void disp_gamma_wait_sof_irq(void)
 		DDPINFO("wait_event_interruptible\n");
 		ret = wait_event_interruptible(g_gamma_sof_irq_wq,
 				atomic_read(&g_gamma_sof_irq_available) == 1);
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret < 0)
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+#endif
 		CRTC_MMP_EVENT_START(0, gamma_sof, 0, 0);
 		DDPINFO("sof_irq_available = 1, waken up, ret = %d", ret);
 	} else {
@@ -779,11 +783,8 @@ static void mtk_gamma_prepare(struct mtk_ddp_comp *comp)
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	if (gamma_run_restore)
 		ddp_dither_restore(comp);
-	else {
-		if (!(readl(comp->regs + DISP_GAMMA_EN) & 0x1))
-			ddp_dither_restore(comp);
+	else
 		gamma_run_restore = true;
-	}
 #else
 	ddp_dither_restore(comp);
 #endif

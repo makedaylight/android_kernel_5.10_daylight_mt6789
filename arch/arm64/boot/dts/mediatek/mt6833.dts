@@ -2052,6 +2052,7 @@
 		clear_md = <0x1fc 0x80000000 1>;
 		ctrl_intf = <1>;
 		slverr = <0>;
+		bypass = <1>;
 	};
 
 	dramc@10230000 {

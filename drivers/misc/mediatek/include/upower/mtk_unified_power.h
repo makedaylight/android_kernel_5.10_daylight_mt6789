@@ -20,6 +20,8 @@ extern "C" {
 #include "mtk_unified_power_6739.h"
 #elif IS_ENABLED(CONFIG_MTK_PLAT_POWER_MT6761)
 #include "mtk_unified_power_6761.h"
+#elif IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
+#include "mtk_unified_power_6893.h"
 #else
 #include "mtk_unified_power_plat.h"
 #endif
@@ -114,6 +116,7 @@ extern void upower_update_dyn_pwr(void);
 extern void upower_update_lkg_pwr(void);
 extern void upower_init_volt_cci(void);
 extern void confirm_volt(void);
+extern void get_pwr_efficiency(void);
 extern void get_L_pwr_efficiency(void);
 extern void get_LL_pwr_efficiency(void);
 extern int upower_cal_turn_point(void);

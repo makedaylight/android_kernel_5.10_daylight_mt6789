@@ -332,6 +332,13 @@ static int mtk_vcodec_enc_probe(struct platform_device *pdev)
 	}
 	mtk_v4l2_debug(0, "hw ipm: %d", dev->venc_hw_ipm);
 
+	ret = of_property_read_u32(pdev->dev.of_node, "mediatek,num_of_cores", &dev->num_of_cores);
+	if (ret != 0) {
+		mtk_v4l2_debug(0, "default no_of_cores set to -1");
+		dev->num_of_cores = -1;
+	}
+	mtk_v4l2_debug(0, "no_of_cores: %d", dev->num_of_cores);
+
 	ret = mtk_vcodec_init_enc_pm(dev);
 	if (ret < 0) {
 		dev_info(&pdev->dev, "Failed to get mt vcodec clock source!");

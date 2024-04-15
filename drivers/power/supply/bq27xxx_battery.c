@@ -2243,6 +2243,7 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 			val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 		if (di->regs[BQ27XXX_REG_NAC] != INVALID_REG_ADDR)
 			ret = bq27xxx_simple_value(bq27xxx_battery_read_nac(di), val);
 		else
@@ -2276,11 +2277,14 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_MANUFACTURER:
 		val->strval = BQ27XXX_MANUFACTURER;
 		break;
+#if 0 //moved, the same as POWER_SUPPLY_PROP_CHARGE_NOW
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 		ret = bq27xxx_simple_value(di->cache.capacity, val);
 		if (val->intval >= 0)
-			val->intval = ((val->intval) * 8000) / 100;
+			//val->intval = ((val->intval) * 8000) / 100;
+			val->intval = ((val->intval) * (8000 * 1000 / 100)); /*uAh*/
 		break;
+#endif
 #ifdef CONFIG_BATTERY_ID
 	case POWER_SUPPLY_PROP_SERIAL_NUMBER:
 		ret = get_adc_info(di->dev);
@@ -2342,9 +2346,11 @@ static void bq27xxx_external_power_changed(struct power_supply *psy)
 {
 	struct bq27xxx_device_info *di = power_supply_get_drvdata(psy);
 
-	cancel_delayed_work_sync(&di->work);
-	schedule_delayed_work(&di->work, 0);
-	power_supply_changed(di->bat);
+	if (di->bat) {
+		cancel_delayed_work_sync(&di->work);
+		schedule_delayed_work(&di->work, 0);
+		power_supply_changed(di->bat);
+	}
 }
 
 

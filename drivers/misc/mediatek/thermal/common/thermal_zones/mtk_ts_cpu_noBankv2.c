@@ -24,6 +24,8 @@
 #include "mach/mtk_thermal.h"
 #include "mtk_thermal_timer.h"
 #include <mtk_ts_setting.h>
+#include "gpu_misc.h"
+#include <gpufreq_v2.h>
 
 #if IS_ENABLED(CONFIG_MTK_CLKMGR)
 #include <mach/mtk_clkmgr.h>
@@ -1204,7 +1206,10 @@ static ssize_t tscpu_write
 		/* avoid thermal reboot after unbinding coolers
 		 * during HT stress
 		 */
-
+#if IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
+		if (tscpu_g_curr_temp > 85000)
+			apthermolmt_set_general_cpu_power_limit(500);
+#endif
 		down(&sem_mutex);
 		tscpu_dprintk("%s tscpu_unregister_thermal\n", __func__);
 		tscpu_unregister_thermal();
@@ -1388,7 +1393,9 @@ static ssize_t tscpu_write
 		tscpu_dprintk("%s tscpu_register_thermal\n", __func__);
 		tscpu_register_thermal();
 		up(&sem_mutex);
-
+#if IS_ENABLED(CONFIG_MTK_PLAT_POWER_6893)
+		apthermolmt_set_general_cpu_power_limit(0);
+#endif
 		proc_write_flag = 1;
 		kfree(ptr_mtktscpu_data);
 		return count;
@@ -2057,6 +2064,7 @@ static int tscpu_read_ttpct(struct seq_file *m, void *v)
 	max_cpu_pwr = 3000;
 #endif
 	max_gpu_pwr = gpufreq_get_max_power(TARGET_DEFAULT) + 1;
+
 	cpu_power = apthermolmt_get_cpu_power_limit();
 	gpu_power = apthermolmt_get_gpu_power_limit();
 
@@ -2183,7 +2191,7 @@ int tscpu_is_temp_valid(void)
 
 	return is_valid;
 }
-
+EXPORT_SYMBOL(tscpu_is_temp_valid);
 
 
 void tscpu_update_tempinfo(void)
@@ -2548,6 +2556,7 @@ static int tscpu_thermal_probe(struct platform_device *dev)
 #endif
 
 	tscpu_thermal_clock_on();
+
 	/* get gpufreq info*/
 	err = get_gpu_power_info();
 	if (err)
@@ -2659,7 +2668,6 @@ static int tscpu_thermal_probe(struct platform_device *dev)
 
 	return 0;
 }
-
 static int get_gpu_power_info(void)
 {
 	int num, i = 0;

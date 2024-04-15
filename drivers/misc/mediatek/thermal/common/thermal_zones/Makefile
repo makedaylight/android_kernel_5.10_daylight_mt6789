@@ -24,6 +24,7 @@ ccflags-y  += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/
 ccflags-y  += -I$(srctree)/drivers/misc/mediatek/base/power/eem_v1/inc/
 ccflags-y  += -I$(srctree)/drivers/misc/mediatek/imgsensor/inc/
 ccflags-y  += -I$(srctree)/drivers/gpu/mediatek/gpufreq/
+ccflags-y  += -I$(srctree)/drivers/gpu/mediatek/gpufreq/v2/include/
 ccflags-y  += -I$(srctree)/drivers/gpu/mediatek/mt-plat/
 ccflags-y  += -I$(srctree)/drivers/misc/mediatek/mcupm/
 ccflags-y  += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/include/

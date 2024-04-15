@@ -32,7 +32,7 @@ endif
 endif
 
 ifneq ($(CONFIG_MTK_GPU_SUPPORT),)
-ifeq ($(CONFIG_MTK_GPU_MT6768_SUPPORT)$(CONFIG_MTK_GPU_MT6765_SUPPORT)$(CONFIG_MTK_GPU_MT6761_SUPPORT)$(CONFIG_MTK_GPU_MT6739_SUPPORT),)
+ifeq ($(CONFIG_MTK_GPU_MT6768_SUPPORT)$(CONFIG_MTK_GPU_MT6765_SUPPORT)$(CONFIG_MTK_GPU_MT6893_SUPPORT)$(CONFIG_MTK_GPU_MT6761_SUPPORT)$(CONFIG_MTK_GPU_MT6739_SUPPORT),)
     obj-y += gpu_bm/
     obj-y += gpueb/
 endif
@@ -42,6 +42,9 @@ ifneq ($(CONFIG_MTK_GPU_SUPPORT),)
     obj-y += ged/
     obj-y += hal/
     obj-y += gpufreq/
+ifneq ($(CONFIG_MTK_GPU_MT6893_SUPPORT),)
+    obj-y += gpu_bm/
+endif
 
 ifneq ($(CONFIG_MTK_GPU_VERSION),"")
 # GPU R5P0

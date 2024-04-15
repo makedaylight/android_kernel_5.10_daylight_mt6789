@@ -41,26 +41,7 @@ ROOT_NODE {
 };
 
 &chosen {
-#if 0
-	bootargs = "console=tty0 root=/dev/ram \
-		    loglevel=8 \
-		    8250.nr_uarts=4 \
-		    androidboot.hardware=mt6789 \
-		    initcall_debug=1 transparent_hugepage=never \
-		    vmalloc=400M swiotlb=noforce \
-		    firmware_class.path=/vendor/firmware pelt=8\
-		    loop.max_part=7";
-#else
-	/* REMOVED: initcall_debug=1 */
-	/* REMOVED: loglevel=8 => MOVED to LK2 */
-	bootargs = "console=tty0 root=/dev/ram \
-		    8250.nr_uarts=4 \
-		    androidboot.hardware=mt6789 \
-		    transparent_hugepage=never \
-		    vmalloc=400M swiotlb=noforce \
-		    firmware_class.path=/vendor/firmware pelt=8\
-		    loop.max_part=7";
-#endif
+	/* VTS: bootargs in DTBO is not allowed; Must setup bootargs in mt6789.dts */
 	jagar_evt2_eoc_workaround; //change ieoc=100mA, eoc_time=30mins for EVT2 only
 };
 
@@ -154,15 +135,15 @@ ROOT_NODE {
 		enable-gpios = <&pio 99 GPIO_ACTIVE_HIGH>;
 
 		enable-post-delay = <20>; /* ms */
-		screen-on-backlight-off-pre-delay = <20>; /* ms */
-		screen-off-backlight-off-pre-delay = <70>; /* ms (latency +1ms - +10ms) */
-		// disp-off-to-on-delay = <100>; /* ms */ /* total delay = enable-post-delay + disp-off-to-on-delay */
-		// disp-off-to-on-delay-timeout = <300>; /* ms */
 
 		label = "lcd-backlight-amber";
 		max-brightness = <255>;
 		max-hw-brightness = <4095>;
-		off-hw-brightness-thresh = <16>; /* 0 =>screen off backlight off; 1-16 =>screen on backlight off */
+		/**
+		 * hw brightness 0    => screen off backlight off
+		 * hw brightness 1-16 => screen on backlight off
+		 */
+		hw-brightness-on-threshold = <16>;
 		min-brightness = <0>;
 		led_mode = <6>;
 		default-state = "off"; /* Default off at booting */
@@ -174,11 +155,76 @@ ROOT_NODE {
 #else
 		control = <0x01>; /* I2C mode */
 #endif
-		time-ctrl = <0x1F>; /* Slope Time: 128ms, Smoothing: No, Fade IN/OUT: max. 64us */
-		time-ctrl-for-off = <0x17>; /* Backlight off: Slope Time: 8ms, Smoothing: No, Fade IN/OUT: max. 64us */
-		fade-off-min-hw-brightness = <1712>; /* min. HW brightness threshold to wait for the fading off time */
-		reg0x08 = <0x02>; /* Soft start time control: 128us */
-		reg0x09 = <0x79>; /* Enable PFM: 31.15KHz */
+		time-ctrl = <0x07>; /* No Slope Time, Fade IN/OUT: max. 64us */
+
+		/* screen off backlight off: Light Smoothing Slope Time: 256ms, Fade IN/OUT: max. 64us */
+		screen-off-backlight-off-time-ctrl = <0x67>;
+		/**
+		 * We can not see LCD backlight when the brightness level is less than or equal to this threshold.
+		 * This brightness threshold is not fixed in different ambient light environment.
+		 *
+		 * Must increase this threshold if the ILED current is decreased.
+		 *
+		 * The backlight will be turned off at around this brightness threshold.
+		 *
+		 * adb shell settings put system screen_brightness 66
+		 * adb shell settings get system screen_brightness
+		 */
+		can-not-see-backlight-brightness-threshold = <66>; /* Linear 25% (1-255) */
+		/* The timeout in usec to turn off LCD backlight for safety.
+		 *
+		 * The LCD backlight will be turned off when MTK HWcomposer disables its overlay session (disableOverlaySession).
+		 * This safety timeout is used to prevent not receiving the MTK HWC's notification.
+		 */
+#ifdef CONFIG_LEDS_RT4539_ANDROID_USERDEBUG
+		screen-off-backlight-off-safety-delay-us = <40000>; /* 40ms */
+#else
+		screen-off-backlight-off-safety-delay-us = <25000>; /* 25ms */
+#endif
+		/* The extra latency time in usec for a better backlight-off fading-out effect.
+		 *
+		 * The SW driver will reserve extra fading-out time before LCD backlight is turned off.
+		 * Please try to increase/decrease this extra latency time for a better fading-out effect.
+		 */
+#ifdef CONFIG_LEDS_RT4539_ANDROID_USERDEBUG
+		screen-off-backlight-off-extra-latency-us = <20000>; /* 20ms */
+#else
+		screen-off-backlight-off-extra-latency-us = <6000>; /* 6ms */
+#endif
+		/* The delay time in usec to start a timer to turn off LCD backlight after receiving the MTK HWC's notification.
+		 *
+		 * When disabling Display and turning off LCD backlight, we may randomly see the below 2 issues.
+		 *
+		 * 1. See a short Display Content on LCD but the backlight is off
+		 *
+		 *    Please increase hwcomposer-disabled-backlight-off-delay-us to prevent this issue.
+		 *
+		 * 2. See a short backlight blink (but no Display Content on LCD)
+		 *
+		 *    Please decrease hwcomposer-disabled-backlight-off-delay-us to prevent this issue.
+		 *
+		 * The root cause of these issues is after receiving the MTK HWC's notification,
+		 * the Display Content on LCD will be removed in a couple of VSYNCs.
+		 *
+		 * In general, hwcomposer-disabled-backlight-off-delay-us = <0> solves the issue 2.
+		 */
+#ifdef CONFIG_LEDS_RT4539_ANDROID_USERDEBUG
+		hwcomposer-disabled-backlight-off-delay-us = <15000>;
+#else
+		hwcomposer-disabled-backlight-off-delay-us = <18500>;
+#endif
+		/* The estimated delay time in usec to prevent a very short random backlight blink.
+		 *
+		 * After the Display is on, Android will turn on LCD backlight.
+		 * When turning on LCD backlight, we may randomly see a very short backlight blink.
+		 *
+		 * The root cause of this blink is that the framebuffer is not updated to Display but the backlight is on.
+		 * In order to prevent this short blink, we have to wait display frames for stability.
+		 */
+		display-on-backlight-on-delay-us = <49998>; /* ~50ms */
+
+		soft-start-ctrl = <0x02>; /* Soft start time control: 128us */
+		clk-pfm-ctrl = <0x79>; /* Enable PFM: 31.15KHz */
 
 		fbs = <1 1 0 1 0 0>;
 		//current = <0x82>; // 20mA(default)
@@ -498,15 +544,14 @@ ROOT_NODE {
 		enable-gpios = <&pio 98 GPIO_ACTIVE_HIGH>;
 
 		enable-post-delay = <20>; /* ms */
-		screen-on-backlight-off-pre-delay = <20>; /* ms */
-		screen-off-backlight-off-pre-delay = <70>; /* ms (latency +1ms - +10ms) */
-		// disp-off-to-on-delay = <100>; /* ms */ /* total delay = enable-post-delay + disp-off-to-on-delay */
-		// disp-off-to-on-delay-timeout = <300>; /* ms */
 
 		label = "lcd-backlight";
 		max-brightness = <255>;
 		max-hw-brightness = <4095>;
-		off-hw-brightness-thresh = <16>; /* 0 =>screen off backlight off; 1-16 =>screen on backlight off */
+		/* hw brightness 0    => screen off backlight off
+		 * hw brightness 1-16 => screen on backlight off
+		 */
+		hw-brightness-on-threshold = <16>;
 		min-brightness = <0>;
 		led_mode = <6>;
 		default-state = "off"; /* Sync with the Bootloader bootlogo brightness */
@@ -518,11 +563,76 @@ ROOT_NODE {
 #else
 		control = <0x01>; /* I2C mode */
 #endif
-		time-ctrl = <0x1F>; /* Slope Time: 128ms, Smoothing: No, Fade IN/OUT: max. 64us */
-		time-ctrl-for-off = <0x17>; /* Backlight off: Slope Time: 8ms, Smoothing: No, Fade IN/OUT: max. 64us */
-		fade-off-min-hw-brightness = <1712>; /* min. HW brightness threshold to wait for the fading off time */
-		reg0x08 = <0x02>; /* Soft start time control: 128us */
-		reg0x09 = <0x79>; /* Enable PFM: 31.15KHz */
+		time-ctrl = <0x07>; /* No Slope Time, Fade IN/OUT: max. 64us */
+
+		/* screen off backlight off: Light Smoothing Slope Time: 256ms, Fade IN/OUT: max. 64us */
+		screen-off-backlight-off-time-ctrl = <0x67>;
+		/**
+		 * We can not see LCD backlight when the brightness level is less than or equal to this threshold.
+		 * This brightness threshold is not fixed in different ambient light environment.
+		 *
+		 * Must increase this threshold if the ILED current is decreased.
+		 *
+		 * The backlight will be turned off at around this brightness threshold.
+		 *
+		 * adb shell settings put system screen_brightness 66
+		 * adb shell settings get system screen_brightness
+		 */
+		can-not-see-backlight-brightness-threshold = <66>; /* Linear 25% (1-255) */
+		/* The timeout in usec to turn off LCD backlight for safety.
+		 *
+		 * The LCD backlight will be turned off when MTK HWcomposer disables its overlay session (disableOverlaySession).
+		 * This safety timeout is used to prevent not receiving the MTK HWC's notification.
+		 */
+#ifdef CONFIG_LEDS_RT4539_ANDROID_USERDEBUG
+		screen-off-backlight-off-safety-delay-us = <40000>; /* 40ms */
+#else
+		screen-off-backlight-off-safety-delay-us = <25000>; /* 25ms */
+#endif
+		/* The extra latency time in usec for a better backlight-off fading-out effect.
+		 *
+		 * The SW driver will reserve extra fading-out time before LCD backlight is turned off.
+		 * Please try to increase/decrease this extra latency time for a better fading-out effect.
+		 */
+#ifdef CONFIG_LEDS_RT4539_ANDROID_USERDEBUG
+		screen-off-backlight-off-extra-latency-us = <20000>; /* 20ms */
+#else
+		screen-off-backlight-off-extra-latency-us = <6000>; /* 6ms */
+#endif
+		/* The delay time in usec to start a timer to turn off LCD backlight after receiving the MTK HWC's notification.
+		 *
+		 * When disabling Display and turning off LCD backlight, we may randomly see the below 2 issues.
+		 *
+		 * 1. See a short Display Content on LCD but the backlight is off
+		 *
+		 *    Please increase hwcomposer-disabled-backlight-off-delay-us to prevent this issue.
+		 *
+		 * 2. See a short backlight blink (but no Display Content on LCD)
+		 *
+		 *    Please decrease hwcomposer-disabled-backlight-off-delay-us to prevent this issue.
+		 *
+		 * The root cause of these issues is after receiving the MTK HWC's notification,
+		 * the Display Content on LCD will be removed in a couple of VSYNCs.
+		 *
+		 * In general, hwcomposer-disabled-backlight-off-delay-us = <0> solves the issue 2.
+		 */
+#ifdef CONFIG_LEDS_RT4539_ANDROID_USERDEBUG
+		hwcomposer-disabled-backlight-off-delay-us = <15000>;
+#else
+		hwcomposer-disabled-backlight-off-delay-us = <18500>;
+#endif
+		/* The estimated delay time in usec to prevent a very short random backlight blink.
+		 *
+		 * After the Display is on, Android will turn on LCD backlight.
+		 * When turning on LCD backlight, we may randomly see a very short backlight blink.
+		 *
+		 * The root cause of this blink is that the framebuffer is not updated to Display but the backlight is on.
+		 * In order to prevent this short blink, we have to wait display frames for stability.
+		 */
+		display-on-backlight-on-delay-us = <49998>; /* ~50ms */
+
+		soft-start-ctrl = <0x02>; /* Soft start time control: 128us */
+		clk-pfm-ctrl = <0x79>; /* Enable PFM: 31.15KHz */
 
 		fbs = <1 1 0 1 0 0>;
 		//current = <0x82>; // 20mA(default)

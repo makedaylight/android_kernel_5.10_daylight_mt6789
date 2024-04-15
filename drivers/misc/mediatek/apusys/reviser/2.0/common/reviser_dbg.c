@@ -59,6 +59,7 @@ static struct dentry *reviser_dbg_err_debug;
 
 
 uint32_t g_rvr_klog;
+uint32_t g_rvr_aee_cnt;
 static uint32_t g_rvr_debug_op;
 static uint32_t g_rvr_remote_klog;
 static uint32_t g_reviser_vlm_ctx;
@@ -644,6 +645,7 @@ int reviser_dbg_init(struct reviser_dev_info *rdv, struct dentry *apu_dbg_root)
 	int ret = 0;
 
 	g_rvr_klog = 0;
+	g_rvr_aee_cnt = 0;
 	g_rvr_remote_klog = 0;
 	g_reviser_vlm_ctx = 0;
 	g_reviser_mem_tcm_bank = 0;

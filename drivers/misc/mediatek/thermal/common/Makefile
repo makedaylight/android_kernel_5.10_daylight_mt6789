@@ -12,6 +12,7 @@
 #
 
 ccflags-y  += -I$(srctree)/drivers/misc/mediatek/thermal/inc
+ccflags-y  += -I$(srctree)/drivers/misc/mediatek/thermal/v5/inc
 ccflags-y  += -I$(srctree)/drivers/gpu/mediatek/gpufreq/
 ccflags-y  += -I$(srctree)/drivers/misc/mediatek/base/power/
 ccflags-y  += -I$(srctree)/drivers/misc/mediatek/base/power/include/

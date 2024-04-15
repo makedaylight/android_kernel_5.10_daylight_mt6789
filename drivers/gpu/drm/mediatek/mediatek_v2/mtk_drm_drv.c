@@ -68,6 +68,10 @@
 //#include "include/pmic_api_buck.h"
 #include <../drivers/gpu/drm/mediatek/mml/mtk-mml.h>
 
+#if IS_ENABLED(CONFIG_LEDS_MTK) && IS_ENABLED(CONFIG_LEDS_RT4539)
+#include <linux/leds-mtk.h>
+#endif
+
 #include "../mml/mtk-mml.h"
 #include "../mml/mtk-mml-drm-adaptor.h"
 #include "../mml/mtk-mml-driver.h"
@@ -1389,12 +1393,35 @@ static void mtk_atomic_mml(struct drm_device *dev,
 	int i = 0;
 	bool last_is_mml = false;
 
+#if IS_ENABLED(CONFIG_LEDS_MTK) && IS_ENABLED(CONFIG_LEDS_RT4539)
+	for_each_old_crtc_in_state(state, crtc, old_crtc_state, i) {
+		if (drm_crtc_index(crtc) == 0) {
+			/* crtc->state == new_crtc_state */
+			struct mtk_crtc_state *mtk_state = to_mtk_crtc_state(crtc->state);
+
+			if (mtk_state->prop_val[CRTC_PROP_HWC_ALL_OVERLAYS_DISABLED]) {
+				mtk_state->prop_val[CRTC_PROP_HWC_ALL_OVERLAYS_DISABLED] = 0;
+				/* MTK hwcomposer all overlays are off for the display off case */
+				/* mtk_leds_brightness_force_all_off() may be called multiple times in stress testing */
+				DDPINFO("%s: HWC_ALL_OVERLAYS_DISABLED: DISP_MODE_IDX=%u\n", __func__,
+						mtk_state->prop_val[CRTC_PROP_DISP_MODE_IDX]);
+				mtk_leds_brightness_force_all_off();
+			}
+
+			goto _found_crtc_index_0;
+		}
+	}
+	return;
+
+_found_crtc_index_0:
+#else
 	for_each_old_crtc_in_state(state, crtc, old_crtc_state, i) {
 		if (drm_crtc_index(crtc) == 0)
 			break;
 		else
 			return;
 	}
+#endif
 
 	mtk_crtc = to_mtk_crtc(crtc);
 
@@ -1436,6 +1463,34 @@ static void mtk_atomic_mml(struct drm_device *dev,
 	else
 		mtk_crtc->mml_ir_state = NOT_MML_IR;
 }
+
+#if 0 /* moved into mtk_atomic_mml() to check whether MTK HWC all overlays are disabled or not */
+//#if IS_ENABLED(CONFIG_LEDS_MTK) && IS_ENABLED(CONFIG_LEDS_RT4539)
+static void mtk_atomic_check_hwc_all_overlays_disabled(struct drm_device *dev,
+	struct drm_atomic_state *state)
+{
+	struct drm_crtc *crtc;
+	struct drm_crtc_state *new_crtc_state;
+	int i = 0;
+
+	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
+		if (drm_crtc_index(crtc) == 0) {
+			/* crtc->state == new_crtc_state */
+			struct mtk_crtc_state *mtk_state = to_mtk_crtc_state(crtc->state);
+
+			if (mtk_state->prop_val[CRTC_PROP_HWC_ALL_OVERLAYS_DISABLED]) {
+				mtk_state->prop_val[CRTC_PROP_HWC_ALL_OVERLAYS_DISABLED] = 0;
+				/* May be called multiple times in stress testing */
+				/* MTK hwcomposer all overlays are off for the display off case */
+				DDPINFO("%s: CRTC_PROP_HWC_ALL_OVERLAYS_DISABLED\n", __func__);
+				mtk_leds_brightness_force_all_off();
+			}
+
+			return;
+		}
+	}
+}
+#endif
 
 static void mtk_set_first_config(struct drm_device *dev,
 					struct drm_atomic_state *old_state)
@@ -1500,6 +1555,11 @@ static void mtk_atomic_complete(struct mtk_drm_private *private,
 	mtk_atomic_check_plane_sec_state(drm, state);
 
 	mtk_atomic_mml(drm, state);
+
+#if 0 /* moved into mtk_atomic_mml() to check whether MTK HWC all overlays are disabled or not */
+//#if IS_ENABLED(CONFIG_LEDS_MTK) && IS_ENABLED(CONFIG_LEDS_RT4539)
+	mtk_atomic_check_hwc_all_overlays_disabled(drm, state);
+#endif
 
 	if (!mtk_atomic_skip_plane_update(private, state)) {
 		drm_atomic_helper_commit_planes(drm, state,
@@ -1605,9 +1665,20 @@ static int mtk_atomic_commit(struct drm_device *drm,
 				}
 			}
 
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+			do {
+				ret = wait_event_interruptible(
+					mtk_crtc->signal_mml_last_job_is_flushed_wq
+					, atomic_read(&mtk_crtc->wait_mml_last_job_is_flushed));
+				if (ret < 0) {
+					DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+				}
+			} while (ret < 0);
+#else
 			ret = wait_event_interruptible(
 				mtk_crtc->signal_mml_last_job_is_flushed_wq
 				, atomic_read(&mtk_crtc->wait_mml_last_job_is_flushed));
+#endif
 		}
 		atomic_set(&(mtk_crtc->wait_mml_last_job_is_flushed), 0);
 
@@ -2040,11 +2111,14 @@ static const enum mtk_ddp_comp_id mt6779_mtk_ddp_main_wb_path[] = {
 static const enum mtk_ddp_comp_id mt6885_mtk_ddp_main[] = {
 	DDP_COMPONENT_OVL0_2L,		DDP_COMPONENT_OVL0,
 	DDP_COMPONENT_OVL0_VIRTUAL0,	DDP_COMPONENT_RDMA0,
-	DDP_COMPONENT_RDMA0_VIRTUAL0,	DDP_COMPONENT_COLOR0,
+	DDP_COMPONENT_RDMA0_VIRTUAL0,
+#ifndef DRM_BYPASS_PQ
+	DDP_COMPONENT_COLOR0,
 	DDP_COMPONENT_CCORR0,
 	DDP_COMPONENT_DMDP_AAL0,
 	DDP_COMPONENT_AAL0,		DDP_COMPONENT_GAMMA0,
 	DDP_COMPONENT_POSTMASK0,	DDP_COMPONENT_DITHER0,
+#endif
 	DDP_COMPONENT_DSI0,		DDP_COMPONENT_PWM0,
 };
 
@@ -4069,6 +4143,9 @@ int mtk_drm_wait_repaint_ioctl(struct drm_device *dev, void *data,
 	} else {
 		*type = DRM_WAIT_FOR_REPAINT;
 		DDPINFO("[REPAINT] interrupted unexpected\n");
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+#endif
 	}
 
 	return 0;
@@ -5125,9 +5202,20 @@ void mtk_drm_wait_mml_submit_done(struct mtk_mml_cb_para *cb_para)
 		cb_para,
 		&(cb_para->mml_job_submit_wq),
 		&(cb_para->mml_job_submit_done));
+
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+	do {
+		ret = wait_event_interruptible(
+			cb_para->mml_job_submit_wq
+			, atomic_read(&cb_para->mml_job_submit_done));
+		if (ret < 0)
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+	} while (ret < 0);
+#else
 	ret = wait_event_interruptible(
 		cb_para->mml_job_submit_wq
 		, atomic_read(&cb_para->mml_job_submit_done));
+#endif
 	DDPINFO("%s 2 ret:%d\n", __func__, ret);
 	atomic_set(&(cb_para->mml_job_submit_done), 0);
 	DDPINFO("%s 3\n", __func__);
@@ -5619,10 +5707,12 @@ static const struct drm_ioctl_desc mtk_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(MTK_FACTORY_LCM_AUTO_TEST, mtk_drm_fm_lcm_auto_test,
 			  DRM_UNLOCKED),
 #endif
+#ifndef DRM_BYPASS_PQ
 	DRM_IOCTL_DEF_DRV(MTK_GET_PQ_CAPS, mtk_drm_ioctl_get_pq_caps,
 			  DRM_UNLOCKED),
 	DRM_IOCTL_DEF_DRV(MTK_SET_PQ_CAPS, mtk_drm_ioctl_set_pq_caps,
 			  DRM_UNLOCKED),
+#endif
 	DRM_IOCTL_DEF_DRV(MTK_SEC_HND_TO_GEM_HND, mtk_drm_sec_hnd_to_gem_hnd,
 			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
 };

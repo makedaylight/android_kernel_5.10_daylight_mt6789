@@ -137,6 +137,7 @@ struct nop_task_info {
 	struct completion run;
 	struct completion rdy;
 	void (*nop_func)(struct nop_task_info *nop_ti);
+	struct task_struct *task_fd;
 	struct list_head nop_queue;
 };
 
@@ -148,7 +149,6 @@ struct trusty_state {
 	char *version_str;
 	u32 api_version;
 	struct device *dev;
-	struct task_struct __percpu *nop_tasks_fd;
 	struct nop_task_info __percpu *nop_tasks_info;
 	spinlock_t nop_lock;	/* protects nop_queue */
 	enum tee_id_t tee_id;

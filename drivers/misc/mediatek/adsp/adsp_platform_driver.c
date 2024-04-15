@@ -376,6 +376,9 @@ int adsp_core_common_init(struct adsp_priv *pdata)
 	pdata->debugfs = debugfs_create_file(name, S_IFREG | 0644, NULL,
 					     pdata, &adsp_debug_ops);
 #endif
+	/* v1: adsp mpu info */
+	if (adspsys->desc->version == 1)
+		adsp_update_mpu_memory_info(pdata);
 
 	/* wdt irq */
 	adsp_irq_registration(pdata->id, ADSP_IRQ_WDT_ID, adsp_wdt_handler, pdata);

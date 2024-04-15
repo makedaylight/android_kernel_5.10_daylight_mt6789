@@ -23,6 +23,14 @@ ccflags-y += \
 	-I$(srctree)/drivers/misc/mediatek/mcupm/mt6768/
 endif
 
+ifneq ($(strip $(CONFIG_MTK_PLAT_POWER_6893)),)
+ccflags-y += \
+	-I$(CPUFREQ_ROOT_DIR)/inc \
+	-I$(CPUFREQ_ROOT_DIR)/src/plat_k6893/	\
+	-I$(srctree)/drivers/misc/mediatek/include      \
+	-I$(srctree)/drivers/misc/mediatek/mcupm/include
+endif
+
 ifneq ($(strip $(CONFIG_MEDIATEK_CPU_DVFS_MT6765)),)
 ccflags-y += -I$(CPUFREQ_ROOT_DIR)/src/common_v2
 include $(srctree)/drivers/misc/mediatek/cpufreq_v2/src/common_v2/Makefile
@@ -112,4 +120,7 @@ CPU_DVFS-y += common_v3/mtk_cpufreq_platform.o
 endif
 ifneq ($(strip $(CONFIG_MEDIATEK_CPU_DVFS_MT6761)),)
 CPU_DVFS-y += platform/mtk_cpufreq_platform.o
+endif
+ifneq ($(strip $(CONFIG_MTK_PLAT_POWER_6893)),)
+CPU_DVFS-y += plat_k6893/mtk_cpufreq_platform.o
 endif

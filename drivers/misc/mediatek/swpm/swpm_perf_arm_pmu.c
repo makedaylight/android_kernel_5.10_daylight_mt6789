@@ -16,6 +16,7 @@
 static unsigned int swpm_arm_pmu_status;
 static unsigned int swpm_arm_dsu_pmu_status;
 static unsigned int boundary;
+static unsigned int pmu_support;
 static unsigned int pmu_dsu_support;
 static unsigned int pmu_dsu_type;
 
@@ -258,8 +259,7 @@ int swpm_arm_dsu_pmu_enable(unsigned int enable)
 {
 	int ret = 0;
 
-	if (pmu_dsu_support)
-		ret |= swpm_dsu_pmu_enable(!!enable);
+	ret |= swpm_dsu_pmu_enable(!!enable);
 
 	if (!ret)
 		swpm_arm_dsu_pmu_status = !!enable && pmu_dsu_support;
@@ -295,6 +295,13 @@ int __init swpm_arm_pmu_init(void)
 		pr_notice("of_find_compatible_node unable to find swpm device node\n");
 		goto END;
 	}
+
+	pmu_support = 1;
+	ret = of_property_read_u32_index(node, "pmu_support",
+				   0, &pmu_support);
+	if (ret)
+		pr_notice("no pmu_support index in dts\n");
+
 	/* device node, device name, offset, variable */
 	ret = of_property_read_u32_index(node, "pmu_boundary_num",
 					 0, &boundary);
@@ -326,8 +333,8 @@ END:
 	}
 	dsu_cycle_idx = -1;
 
-	swpm_arm_pmu_enable_all(1);
-	swpm_arm_dsu_pmu_enable(1);
+	swpm_arm_pmu_enable_all(pmu_support);
+	swpm_arm_dsu_pmu_enable(pmu_dsu_support);
 
 	return 0;
 }

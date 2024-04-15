@@ -251,7 +251,12 @@ static int mtk_set_hw_brightness(struct mt_led_data *led_dat,
 	pr_debug("set hw brightness: %d -> %d", led_dat->hw_brightness, brightness);
 
 	brightness = min(brightness, led_dat->conf.limit_hw_brightness);
+#if IS_ENABLED(CONFIG_LEDS_RT4539)
+	/* WORKAROUND: bypass brightness 0 for Jagar screen off backlight off case */
+	if (brightness == led_dat->hw_brightness && brightness)
+#else
 	if (brightness == led_dat->hw_brightness)
+#endif
 		return 0;
 
 	if (led_dat->mtk_hw_brightness_set(led_dat, brightness) >= 0) {
@@ -292,6 +297,28 @@ int mtk_leds_brightness_set(char *name, int level)
 }
 EXPORT_SYMBOL(mtk_leds_brightness_set);
 
+void mtk_leds_brightness_force_all_off(void)
+{
+	if (leds_info) {
+		struct mt_led_data *led_dat;
+		int i = 0;
+
+		while (i < leds_info->lens) {
+			led_dat = container_of(leds_info->leds[i], struct mt_led_data, desp);
+
+			if (led_dat->mtk_hw_brightness_force_off) {
+				mutex_lock(&led_dat->led_access);
+				pr_debug("%s: force off", led_dat->desp.name);
+				led_dat->mtk_hw_brightness_force_off(led_dat);
+				mutex_unlock(&led_dat->led_access);
+			}
+
+			i++;
+		}
+	}
+}
+EXPORT_SYMBOL(mtk_leds_brightness_force_all_off);
+
 static int mtk_set_brightness(struct led_classdev *led_cdev,
 					  enum led_brightness brightness)
 {
@@ -308,8 +335,13 @@ static int mtk_set_brightness(struct led_classdev *led_cdev,
 		led_dat->mtk_conn_id_get(led_dat, led_dat->desp.index);
 	}
 
+#if IS_ENABLED(CONFIG_LEDS_RT4539)
+	/* WORKAROUND: bypass brightness 0 for Jagar screen off backlight off case */
+	if (led_dat->last_brightness == brightness && brightness)
+#else
 	if (led_dat->last_brightness == brightness)
 		return 0;
+#endif
 
 	led_dat->last_brightness = brightness;
 

@@ -15,11 +15,6 @@
 #include "ufsfeature.h"
 #endif
 
-/* UFSHCD error handling flags */
-enum {
-	UFSHCD_EH_IN_PROGRESS = (1 << 0),
-};
-
 #define ufshcd_eh_in_progress(h) \
 	((h)->eh_flags & UFSHCD_EH_IN_PROGRESS)
 
@@ -30,7 +25,11 @@ enum {
 #define REG_UFS_REFCLK_CTRL         0x144
 #define REG_UFS_EXTREG              0x2100
 #define REG_UFS_MPHYCTRL            0x2200
+#define REG_UFS_AXI_W_ULTRA_THR     0x220C
+
 #define REG_UFS_MTK_HW_VER          0x2240
+#define REG_UFS_MTK_OCS_ERR_STATUS  0x2244
+
 #define REG_UFS_REJECT_MON          0x22AC
 #define REG_UFS_DEBUG_SEL           0x22C0
 #define REG_UFS_PROBE               0x22C8
@@ -104,6 +103,18 @@ enum {
 	VS_HIB_EXIT_CONF            = 12,
 	VS_HIB_EXIT                 = 13,
 };
+
+/*
+ * Vendor specific reset control
+ */
+enum {
+	SW_RST_TARGET_UFSHCI        = 0x1,
+	SW_RST_TARGET_UNIPRO        = 0x2,
+	SW_RST_TARGET_UFSCPT        = 0x4,
+	SW_RST_TARGET_MPHY          = 0x8,
+};
+
+#define DOORBELL_CLR_TOUT_US		(1000 * 1000) /* 1 sec */
 
 /*
  * SiP commands
@@ -195,6 +206,7 @@ enum ufs_mtk_host_caps {
 	 * allow vccqx upstream to enter LPM
 	 */
 	UFS_MTK_CAP_FORCE_VSx_LPM              = 1 << 5,
+	UFS_MTK_CAP_UFSHCI_PERF_HURISTIC       = 1 << 6,
 };
 
 struct ufs_mtk_crypt_cfg {
@@ -239,6 +251,10 @@ struct ufs_mtk_host {
 #if defined(CONFIG_UFSFEATURE)
 	struct ufsf_feature ufsf;
 #endif
+	u32 ufs_mtk_qcmd_r_cmd_cnt;
+	u32 ufs_mtk_qcmd_w_cmd_cnt;
+	struct work_struct err_handle_work;
+	bool read_write_hw_err;
 };
 
 /*
@@ -276,6 +292,7 @@ struct ufs_ioctl_query_data {
 	 * Please check include/uapi/scsi/ufs/ufs.h for the definition of it.
 	 */
 	__u8 idn;
+	__u8 idx;
 	/*
 	 * User should specify the size of the buffer (buffer[0] below) where
 	 * it wants to read the query data (attribute/flag/descriptor).
@@ -290,7 +307,7 @@ struct ufs_ioctl_query_data {
 	 * For Read/Write Attribute you will have to allocate 4 bytes
 	 * For Read/Write Flag you will have to allocate 1 byte
 	 */
-	__u8 buffer[0];
+	__u8 *buffer;
 };
 
 enum {

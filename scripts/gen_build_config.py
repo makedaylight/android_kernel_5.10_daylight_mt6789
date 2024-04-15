@@ -25,10 +25,10 @@ def get_config_in_defconfig(file_name, kernel_dir):
             special_defconfig = "gki_defconfig"
         result = pattern_buildconfig.match(line)
         if result:
-            build_config = result.group(1).strip('"')
+            build_config = result.group(1).strip("\r").strip('"')
         result = pattern_extmodules.match(line)
         if result:
-            ext_modules = result.group(1).strip('"')
+            ext_modules = result.group(1).strip("\r").strip('"')
     file_handle.close()
     return (special_defconfig, build_config, ext_modules)
 

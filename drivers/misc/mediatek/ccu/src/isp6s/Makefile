@@ -16,7 +16,8 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/mmp/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/ccu/inc/
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/ccu/src/isp6s/ccu_ext_interface
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/ccu/src/isp6s/
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/ccu/src/isp6s/ccu_ext_interface/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/smi/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/mtk-interconnect/
 ccflags-y += -I$(srctree)/drivers/i2c/busses/
@@ -33,4 +34,3 @@ ccu_isp6s-objs += ccu_qos.o
 ccu_isp6s-objs += ccu_drv.o
 ccu_isp6s-objs += ccu_ipc.o
 ccu_isp6s-objs += ccu_mva.o
-

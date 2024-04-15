@@ -1206,6 +1206,10 @@ signed int dpe_enque_cb(struct frame *frames, void *req)
 	/*TODO: m_ReqNum is FrmNum; FIFO only thus f starts from 0 */
 	ucnt = 0;
 	fcnt = _req->m_ReqNum;
+	if (fcnt > MAX_REQUEST_SIZE_PER_ENGINE) {
+		LOG_ERR("fcnt(%d) bigger than max req size(%d)", fcnt, MAX_REQUEST_SIZE_PER_ENGINE);
+		return -1;
+	}
 	for (f = 0; f < fcnt; f++) {
 		if (_req->m_pDpeConfig[ucnt].Dpe_DVSSettings.is_pd_mode) {
 			pd_frame_num =
@@ -1290,14 +1294,24 @@ signed int dpe_enque_cb(struct frame *frames, void *req)
 					_req->m_pDpeConfig[
 					ucnt].Dpe_DVSSettings.engHeight);
 				}
-				memcpy(frames[f+t].data,
-				&_req->m_pDpeConfig[ucnt],
-				sizeof(struct DPE_Config));
+				if ((frames[f+t].data != NULL) && (&_req->m_pDpeConfig[ucnt] != NULL)) {
+					memcpy(frames[f+t].data,
+					&_req->m_pDpeConfig[ucnt],
+					sizeof(struct DPE_Config));
+				} else {
+					LOG_ERR("[enque cb] null frame pt\n");
+					return -1;
+				}
 			}
 			f += (t-1);
 		} else {
-			memcpy(frames[f].data, &_req->m_pDpeConfig[ucnt],
+			if ((frames[f].data != NULL) && (&_req->m_pDpeConfig[ucnt] != NULL)) {
+				memcpy(frames[f].data, &_req->m_pDpeConfig[ucnt],
 						sizeof(struct DPE_Config));
+			} else {
+				LOG_ERR("[enque cb] null frame pt\n");
+				return -1;
+			}
 		}
 		pDpeConfig = &_req->m_pDpeConfig[ucnt];
 		ucnt++;
@@ -2952,11 +2966,11 @@ static inline void DPE_Prepare_Enable_ccf_clock(void)
 }
 static inline void DPE_Disable_Unprepare_ccf_clock(void)
 {
-	clk_disable_unprepare(dpe_clk.CG_TOP_MUX_DPE);
-	clk_disable_unprepare(dpe_clk.CG_IPE_SMI_SUBCOM);
+	clk_disable_unprepare(dpe_clk.CG_IPESYS_DPE);
 	clk_disable_unprepare(dpe_clk.CG_IPE_LARB19);
 	clk_disable_unprepare(dpe_clk.CG_IPE_LARB20);
-	clk_disable_unprepare(dpe_clk.CG_IPESYS_DPE);
+	clk_disable_unprepare(dpe_clk.CG_IPE_SMI_SUBCOM);
+
 #ifdef SMI_CLK
 	mtk_smi_larb_put(DPE_devs->larb19);
 	mtk_smi_larb_put(DPE_devs->larb20);
@@ -2966,6 +2980,7 @@ static inline void DPE_Disable_Unprepare_ccf_clock(void)
 	smi_bus_disable_unprepare(SMI_LARB19, DPE_DEV_NAME);
 	smi_bus_disable_unprepare(SMI_LARB20, DPE_DEV_NAME);
 #endif
+	clk_disable_unprepare(dpe_clk.CG_TOP_MUX_DPE);
 }
 #endif
 /**************************************************************
@@ -4190,6 +4205,7 @@ static signed int DPE_release(struct inode *pInode, struct file *pFile)
 	LOG_INF("Curr UsrCnt(%d), (process, pid, tgid)=(%s, %d, %d), last user",
 		DPEInfo.UserCount, current->comm, current->pid, current->tgid);
 
+	cmdq_mbox_stop(dpe_clt);
 	cmdq_mbox_disable(dpe_clt->chan);
 	/* Disable clock. */
 	DPE_EnableClock(MFALSE);
@@ -4570,14 +4586,14 @@ static signed int DPE_probe(struct platform_device *pDev)
 /* parse hardware event */
 //dvs_event_id = cmdq_dev_get_event(&pDev->dev, "EVENT_IPE_DVS_DONE");
 		of_property_read_u32(pDev->dev.of_node,
-				"event_ipe_dvs_done",
+				"EVENT_IPE_DVS_DONE",
 				&dvs_event_id);
 		LOG_INF("[Debug]dvs_event_id %d\n", dvs_event_id);
 	} else if (nr_DPE_devs == 2) {
 /* parse hardware event */
-//dvp_event_id = cmdq_dev_get_event(&pDev->dev, "event_ipe_dvp_done");
+//dvp_event_id = cmdq_dev_get_event(&pDev->dev, "EVENT_IPE_DVP_DONE");
 		of_property_read_u32(pDev->dev.of_node,
-				"event_ipe_dvp_done",
+				"EVENT_IPE_DVP_DONE",
 				&dvp_event_id);
 		LOG_INF("[Debug]dvp_event_id %d\n", dvp_event_id);
 	}

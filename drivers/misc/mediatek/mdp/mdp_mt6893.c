@@ -2286,7 +2286,7 @@ static s32 mdp_dump_engine_usage(struct EngineStruct *engine_list)
 static bool mdp_is_mtee(struct cmdqRecStruct *handle)
 {
 #ifdef CMDQ_ENG_MTEE_GROUP_BITS
-	return bool(handle->engineFlag & CMDQ_ENG_MTEE_GROUP_BITS);
+	return (handle->engineFlag & CMDQ_ENG_MTEE_GROUP_BITS);
 #else
 	return false;
 #endif
@@ -2890,6 +2890,10 @@ static void mdp_readback_aal_by_engine(struct cmdqRecStruct *handle,
 		CMDQ_ERR("%s not support\n", __func__);
 		return;
 	}
+#ifdef CMDQ_SECURE_PATH_SUPPORT
+	if (handle->secData.is_secure)
+		engine = engine - CMDQ_ENG_MDP_AAL0 + CMDQ_SEC_MDP_AAL0;
+#endif
 
 	cmdq_mdp_get_func()->mdpReadbackAal(handle, engine, base, pa, param, pipe);
 }
@@ -2913,13 +2917,18 @@ static void mdp_readback_hdr_by_engine(struct cmdqRecStruct *handle,
 		CMDQ_ERR("%s not support\n", __func__);
 		return;
 	}
-
+#ifdef CMDQ_SECURE_PATH_SUPPORT
+	if (handle->secData.is_secure)
+		engine = engine - CMDQ_ENG_MDP_HDR0 + CMDQ_SEC_MDP_HDR0;
+#endif
 	cmdq_mdp_get_func()->mdpReadbackHdr(handle, engine, base, pa, param, pipe);
 }
 
 void cmdq_mdp_compose_readback(struct cmdqRecStruct *handle,
 	u16 engine, dma_addr_t addr, u32 param)
 {
+	if(handle->readback_cnt >= CMDQ_MAX_READBACK_ENG)
+		return;
 	switch (engine) {
 	case CMDQ_ENG_MDP_AAL0:
 	case CMDQ_ENG_MDP_AAL1:
@@ -2960,6 +2969,11 @@ static s32 mdp_get_rdma_idx(u32 eng_base)
 	}
 
 	return rdma_idx;
+}
+
+static bool mdp_svp_support_meta_data(void)
+{
+	return true;
 }
 
 void cmdq_mdp_platform_function_setting(void)
@@ -3014,6 +3028,7 @@ void cmdq_mdp_platform_function_setting(void)
 	pFunc->getEngineGroupName = mdp_get_engine_group_name;
 	pFunc->mdpComposeReadback = cmdq_mdp_compose_readback;
 	pFunc->getRDMAIndex = mdp_get_rdma_idx;
+	pFunc->mdpSvpSupportMetaData = mdp_svp_support_meta_data;
 }
 
 MODULE_LICENSE("GPL");

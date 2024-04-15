@@ -256,6 +256,8 @@ int vpu_send_cmd(int op, void *hnd, struct apusys_device *adev)
 			      __func__, vd->id,
 			      *(uint32_t *)ucmd->kva, ucmd->size);
 		return vpu_ucmd_handle(vd, ucmd);
+	case APUSYS_CMD_VALIDATE:
+		return ret;
 	default:
 		vpu_cmd_debug("%s: vpu%d: unknown command: %d\n",
 			      __func__, vd->id, op);
@@ -456,11 +458,13 @@ static int vpu_shared_get(struct platform_device *pdev,
 
 	kref_init(&vpu_drv->iova_ref);
 
-	if (!vpu_drv->mva_algo) {
+	if (!vpu_drv->mva_algo && vd->id == 0) {
 		cops->emi_mpu_set(vpu_drv->bin_pa, vpu_drv->bin_size);
 
 		if (mops->dts(vd->dev, "algo", &vpu_drv->iova_algo))
 			goto error;
+		if (!vpu_drv->iova_algo.size)
+			return 0;
 		iova = mops->alloc(vd->dev, &vpu_drv->iova_algo);
 		if (!iova)
 			goto error;
@@ -602,6 +606,7 @@ static int vpu_init_adev(struct vpu_device *vd,
 	adev->dev_type = type;
 	adev->preempt_type = APUSYS_PREEMPT_WAITCOMPLETED;
 	adev->private = vd;
+	adev->idx = vd->id;
 	adev->send_cmd = hndl;
 	memset(adev->meta_data, 0, sizeof(adev->meta_data));
 

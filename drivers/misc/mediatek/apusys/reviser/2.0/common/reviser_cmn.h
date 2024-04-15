@@ -11,6 +11,7 @@
 #include <linux/seq_file.h>
 
 extern u32 g_rvr_klog;
+extern u32 g_rvr_aee_cnt;
 
 enum {
 	RVR_DBG_HW = 0x01,
@@ -51,6 +52,22 @@ int rvr_debug_on(int mask)
 
 #define DEBUG_TAG LOG_DEBUG("\n")
 //#define DEBUG_TAG
+
+#if IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
+#include <aee.h>
+#define apu_reviser_aee(format, args...) \
+	do { \
+		if (g_rvr_aee_cnt++ < 3) {\
+			pr_info("apusys reviser:" format, ##args); \
+			aee_kernel_warning("APUSYS_REVISER_EXCEPTION", \
+				"\nCRDISPATCH_KEY:APUSYS_REVISER\n" format, \
+				##args); \
+		}\
+	} while (0)
+#else
+#define apu_reviser_aee(...)
+#endif
+
 
 /* print to console via seq file */
 #define LOG_CON(s, x, args...) \

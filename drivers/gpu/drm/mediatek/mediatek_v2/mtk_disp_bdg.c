@@ -5675,6 +5675,9 @@ static int mtk_bdg_eint_check_worker_kthread(void *data)
 						atomic_read(&bdg_eint_wakeup));
 		CRTC_MMP_EVENT_START(0, bdg_gce_irq, 0, 0);
 		if (ret < 0) {
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+#endif
 			DDPINFO("[ESD]check thread waked up accidently\n");
 			continue;
 		}

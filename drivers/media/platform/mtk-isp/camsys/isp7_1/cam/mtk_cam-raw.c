@@ -3304,7 +3304,7 @@ int mtk_cam_raw_select(struct mtk_cam_ctx *ctx,
 			selected = true;
 		}
 	} else if (pipe->res_config.raw_num_used == 2) {
-		for (m = MTKCAM_SUBDEV_RAW_0; m >= MTKCAM_SUBDEV_RAW_0; m--) {
+		for (m = MTKCAM_SUBDEV_RAW_0; m <= MTKCAM_SUBDEV_RAW_1; m++) {
 			mask = (1 << m) | (1 << (m + 1));
 			if (!(raw_status & mask)) {
 				pipe->enabled_raw |= mask;

@@ -647,6 +647,10 @@ static s32 cmdq_mdp_lock_thread(struct cmdqRecStruct *handle)
 #ifdef CMDQ_SECURE_PATH_SUPPORT
 	else
 		cmdq_sec_mbox_enable(((struct cmdq_client *) handle->pkt->cl)->chan);
+
+	if(handle->pkt_rb)
+		cmdq_mbox_enable(((struct cmdq_client *) handle->pkt_rb->cl)->chan);
+
 #endif
 
 	CMDQ_PROF_END(current->pid, __func__);
@@ -753,6 +757,10 @@ static void cmdq_mdp_handle_stop(struct cmdqRecStruct *handle)
 #ifdef CMDQ_SECURE_PATH_SUPPORT
 	else
 		cmdq_sec_mbox_disable(((struct cmdq_client *)handle->pkt->cl)->chan);
+
+	if(handle->pkt_rb)
+		cmdq_mbox_disable(((struct cmdq_client *) handle->pkt_rb->cl)->chan);
+
 #endif
 
 	cmdq_mdp_common_clock_disable(handle->engineFlag);

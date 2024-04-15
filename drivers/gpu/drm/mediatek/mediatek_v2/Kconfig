@@ -7,6 +7,12 @@ config DRM_MEDIATEK_V2
 	  This driver provides kernel mode setting and
 	  buffer management to userspace.
 
+config DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+	bool "Handle the return value of wait_event_interruptible()"
+	default n
+	help
+	  Select to handle the return value of wait_event_interruptible()
+
 config DRM_MTK_ICOM_ENABLE_LOW_POWER_IDLE_MODE
 	bool "Enable the Display Low-Power Idle mode"
 	default n

@@ -45,4 +45,5 @@ static inline void mtk_leds_notify_brightness_hw_changed(
 int mtk_leds_register_notifier(struct notifier_block *nb);
 int mtk_leds_unregister_notifier(struct notifier_block *nb);
 int mtk_leds_brightness_set(char *name, int bl_1024);
+void mtk_leds_brightness_force_all_off(void);
 int setMaxBrightness(char *name, int percent, bool enable);

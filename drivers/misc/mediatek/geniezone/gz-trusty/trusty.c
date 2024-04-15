@@ -81,6 +81,11 @@
 #define SMC_ARCH_EXTENSION	".arch_extension sec\n"
 #define SMC_REGISTERS_TRASHED	"ip"
 #endif
+
+#define DYNAMIC_SET_PRIORITY
+#define TRUSTY_RT_POLICY         (0x1)
+#define TRUSTY_NORMAL_POLICY     (0X2)
+
 static inline ulong smc_asm(ulong r0, ulong r1, ulong r2, ulong r3)
 {
 	register ulong _r0 asm(SMC_ARG0) = r0;
@@ -753,9 +758,8 @@ static int trusty_nop_thread_free(struct trusty_state *s)
 
 	for_each_possible_cpu(cpu) {
 		struct nop_task_info *nop_ti = per_cpu_ptr(s->nop_tasks_info, cpu);
-		struct task_struct *ts = per_cpu_ptr(s->nop_tasks_fd, cpu);
 
-		if (IS_ERR_OR_NULL(nop_ti) || IS_ERR_OR_NULL(ts))
+		if (IS_ERR_OR_NULL(nop_ti) || IS_ERR_OR_NULL(nop_ti->task_fd))
 			continue;
 
 		nop_ti->idx = -1;
@@ -772,12 +776,6 @@ static int trusty_nop_thread_create(struct trusty_state *s)
 	unsigned int cpu;
 	int ret;
 
-	s->nop_tasks_fd = devm_alloc_percpu(s->dev, struct task_struct);
-	if (!s->nop_tasks_fd) {
-		trusty_info(s->dev, "Failed to allocate nop_tasks_fd\n");
-		return -ENOMEM;
-	}
-
 	s->nop_tasks_info = devm_alloc_percpu(s->dev, struct nop_task_info);
 	if (!s->nop_tasks_info) {
 		trusty_info(s->dev, "Failed to allocate nop_tasks_info\n");
@@ -785,7 +783,7 @@ static int trusty_nop_thread_create(struct trusty_state *s)
 	}
 
 	for_each_possible_cpu(cpu) {
-		struct task_struct *ts = per_cpu_ptr(s->nop_tasks_fd, cpu);
+		struct task_struct *task_fd;
 		struct nop_task_info *nop_ti = per_cpu_ptr(s->nop_tasks_info, cpu);
 
 		nop_ti->idx = cpu;
@@ -799,18 +797,19 @@ static int trusty_nop_thread_create(struct trusty_state *s)
 		init_completion(&nop_ti->rdy);
 		INIT_LIST_HEAD(&nop_ti->nop_queue);
 
-		ts = kthread_create_on_node(trusty_task_nop, (void *)nop_ti,
+		task_fd = kthread_create_on_node(trusty_task_nop, (void *)nop_ti,
 					    cpu_to_node(cpu), "id%d_trusty_n/%d",
 					    s->tee_id, cpu);
-		if (IS_ERR(ts)) {
+		if (IS_ERR(task_fd)) {
 			trusty_info(s->dev, "%s unable create kthread\n", __func__);
-			ret = PTR_ERR(ts);
+			ret = PTR_ERR(task_fd);
 			goto err_thread_create;
 		}
-		set_user_nice(ts, PRIO_TO_NICE(MAX_USER_RT_PRIO) + 1);
-		kthread_bind(ts, cpu);
-
-		wake_up_process(ts);
+		set_user_nice(task_fd, PRIO_TO_NICE(MAX_USER_RT_PRIO) + 1);
+		kthread_bind(task_fd, cpu);
+		wake_up_process(task_fd);
+		nop_ti->task_fd = task_fd;
+		pr_info("%s cpu%u %px %px\n", __func__, cpu, task_fd, nop_ti->task_fd);
 	}
 
 	for_each_possible_cpu(cpu) {
@@ -828,6 +827,51 @@ err_thread_create:
 	trusty_nop_thread_free(s);
 	return ret;
 }
+
+int trusty_nop_set_switch_pri(struct device *dev, uint32_t policy)
+{
+	#ifdef DYNAMIC_SET_PRIORITY
+	struct sched_param param = {.sched_priority = 50 };
+	int retVal = 0;
+	unsigned int cpu;
+
+	struct trusty_state *s;
+
+	if (IS_ERR_OR_NULL(dev))
+		return -EINVAL;
+
+	s = platform_get_drvdata(to_platform_device(dev));
+
+	if (policy == TRUSTY_RT_POLICY) {
+		for_each_possible_cpu(cpu) {
+			struct nop_task_info *nop_ti = per_cpu_ptr(s->nop_tasks_info, cpu);
+			if (nop_ti->task_fd != NULL) {
+				sched_setscheduler_nocheck(nop_ti->task_fd,
+						SCHED_FIFO, &param);
+			} else
+				return -EINVAL;
+		}
+		return 0;
+	} else if (policy == TRUSTY_NORMAL_POLICY) {
+		param.sched_priority = 0;
+		for_each_possible_cpu(cpu) {
+			struct nop_task_info *nop_ti = per_cpu_ptr(s->nop_tasks_info, cpu);
+			if (nop_ti->task_fd != NULL) {
+				sched_setscheduler_nocheck(nop_ti->task_fd,
+						SCHED_NORMAL, &param);
+				set_user_nice(nop_ti->task_fd, PRIO_TO_NICE(MAX_RT_PRIO) + 1);
+			} else
+				return -EINVAL;
+		}
+		return 0;
+	}
+
+	return retVal;
+	#else
+		return 0;
+	#endif
+}
+EXPORT_SYMBOL_GPL(trusty_nop_set_switch_pri);
 
 static int trusty_poll_notify(struct notifier_block *nb, unsigned long action,
 		       void *data)

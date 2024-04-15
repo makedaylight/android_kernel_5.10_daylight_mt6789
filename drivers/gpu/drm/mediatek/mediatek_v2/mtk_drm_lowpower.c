@@ -526,6 +526,12 @@ static int mtk_drm_async_kick_idlemgr_thread(void *data)
 		ret = wait_event_interruptible(
 			idlemgr->kick_wq,
 			atomic_read(&idlemgr->kick_task_active));
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#endif
 
 		atomic_set(&idlemgr->kick_task_active, 0);
 
@@ -554,6 +560,12 @@ static int mtk_drm_idlemgr_monitor_thread(void *data)
 			idlemgr->idlemgr_wq,
 			atomic_read(&idlemgr->idlemgr_task_active));
 
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		if (ret < 0) {
+			DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			continue;
+		}
+#endif
 		msleep_interruptible(idlemgr_ctx->idle_check_interval);
 
 		DDP_MUTEX_LOCK(&mtk_crtc->lock, __func__, __LINE__);
@@ -627,8 +639,18 @@ static int mtk_drm_idlemgr_monitor_thread(void *data)
 
 		DDP_MUTEX_UNLOCK(&mtk_crtc->lock, __func__, __LINE__);
 
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+		do {
+			ret = wait_event_interruptible(idlemgr->idlemgr_wq,
+						!idlemgr_ctx->is_idle);
+			if (ret < 0) {
+				DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+			}
+		} while (ret < 0);
+#else
 		wait_event_interruptible(idlemgr->idlemgr_wq,
 					 !idlemgr_ctx->is_idle);
+#endif
 
 		if (kthread_should_stop())
 			break;

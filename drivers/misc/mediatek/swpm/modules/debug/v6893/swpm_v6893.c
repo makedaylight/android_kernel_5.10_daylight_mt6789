@@ -535,8 +535,12 @@ static void swpm_send_enable_ipi(unsigned int type, unsigned int enable)
 	qos_d.cmd = QOS_IPI_SWPM_ENABLE;
 	qos_d.u.swpm_enable.type = type;
 	qos_d.u.swpm_enable.enable = enable;
+#if IS_ENABLED(CONFIG_MTK_TINYSYS_SSPM_V3)
 	qos_ipi_to_sspm_scmi_command(qos_d.cmd, type, enable, 0,
 				     QOS_IPI_SCMI_SET);
+#else
+	qos_ipi_to_sspm_command(&qos_d, 3);
+#endif
 #endif
 }
 
@@ -552,11 +556,15 @@ static void swpm_send_init_ipi(unsigned int addr, unsigned int size,
 	qos_d.u.swpm_init.dram_addr = addr;
 	qos_d.u.swpm_init.dram_size = size;
 	qos_d.u.swpm_init.dram_ch_num = ch_num;
+#if IS_ENABLED(CONFIG_MTK_TINYSYS_SSPM_V3)
 	qos_ipi_to_sspm_scmi_command(qos_d.cmd, addr, size, ch_num,
 					      QOS_IPI_SCMI_SET);
 	offset = qos_ipi_to_sspm_scmi_command(qos_d.cmd, 0, 0, 0,
 					      QOS_IPI_SCMI_GET);
+#else
 
+	offset = qos_ipi_to_sspm_command(&qos_d, 4);
+#endif
 	if (offset == -1) {
 		pr_notice("qos ipi not ready init fail\n");
 		goto error;
@@ -1067,8 +1075,12 @@ void swpm_set_update_cnt(unsigned int type, unsigned int cnt)
 		qos_d.cmd = QOS_IPI_SWPM_SET_UPDATE_CNT;
 		qos_d.u.swpm_set_update_cnt.type = type;
 		qos_d.u.swpm_set_update_cnt.cnt = cnt;
+#if IS_ENABLED(CONFIG_MTK_TINYSYS_SSPM_V3)
 		qos_ipi_to_sspm_scmi_command(qos_d.cmd, type, cnt, 0,
 					     QOS_IPI_SCMI_SET);
+#else
+		qos_ipi_to_sspm_command(&qos_d, 3);
+#endif
 	}
 #endif
 	swpm_unlock(&swpm_mutex);

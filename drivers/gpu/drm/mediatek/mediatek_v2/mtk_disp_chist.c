@@ -984,7 +984,14 @@ static int mtk_chist_read_kthread(void *data)
 			ret = wait_event_interruptible(g_chist_get_irq_wq,
 				atomic_read(&(g_chist_get_irq[index_of_chist(comp->id)])) == 1);
 			if (ret < 0)
+#ifdef CONFIG_DRM_MTK_ICOM_HANDLE_WAIT_EVENT_INTERRUPTIBLE
+			{
+				DDPMSG("[%s][%d] wait_event_interruptible return %pe !!!\n", __func__, __LINE__, ERR_PTR(ret));
+				continue;
+			}
+#else
 				DDPPR_ERR("wait %s fail, ret=%d\n", __func__, ret);
+#endif
 			else
 				DDPDBG("%s: wait_event_interruptible -- ", __func__);
 		} else {

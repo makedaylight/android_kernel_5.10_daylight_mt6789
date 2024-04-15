@@ -1666,29 +1666,35 @@ static inline void MFB_Prepare_Enable_ccf_clock(void)
 	if (ret)
 		LOG_ERR("mtk_smi_larb_get error\n");
 	//smi_bus_prepare_enable(SMI_LARB11, MFB_DEV_NAME);
-	ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_0);
-	if (ret)
-		LOG_ERR("cannot prepare and enable CG_MFB_IMG_0 clock\n");
+	if(mfb_clk.CG_MFB_IMG_0 != NULL) {
+		ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_0);
+		if (ret)
+			LOG_ERR("cannot prepare and enable CG_MFB_IMG_0 clock\n");
+	}
 
-	ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_1);
-	if (ret)
-		LOG_ERR("cannot prepare and enable CG_MFB_IMG_1 clock\n");
+	if(mfb_clk.CG_MFB_IMG_1 != NULL) {
+		ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_1);
+		if (ret)
+			LOG_ERR("cannot prepare and enable CG_MFB_IMG_1 clock\n");
+	}
 
-	ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_2);
-	if (ret)
-		LOG_ERR("cannot prepare and enable CG_MFB_IMG_2 clock\n");
+	if(mfb_clk.CG_MFB_IMG_2 != NULL) {
+		ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_2);
+		if (ret)
+			LOG_ERR("cannot prepare and enable CG_MFB_IMG_2 clock\n");
+	}
 
-	if (mfb_clk.CG_MFB_IMG_3 == NULL)
-		return;
-	ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_3);
-	if (ret)
-		LOG_ERR("cannot prepare and enable CG_MFB_IMG_3 clock\n");
+	if(mfb_clk.CG_MFB_IMG_3 != NULL) {
+		ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_3);
+		if (ret)
+			LOG_ERR("cannot prepare and enable CG_MFB_IMG_3 clock\n");
+	}
 
-	if (mfb_clk.CG_MFB_IMG_4 == NULL)
-		return;
-	ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_4);
-	if (ret)
-		LOG_ERR("cannot prepare and enable CG_MFB_IMG_4 clock\n");
+	if(mfb_clk.CG_MFB_IMG_4 != NULL) {
+		ret = clk_prepare_enable(mfb_clk.CG_MFB_IMG_4);
+		if (ret)
+			LOG_ERR("cannot prepare and enable CG_MFB_IMG_4 clock\n");
+	}
 
 	// cmdq enable
 	cmdq_mbox_enable(mss_clt->chan);

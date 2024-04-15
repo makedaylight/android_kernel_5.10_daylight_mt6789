@@ -12,6 +12,7 @@
 #include <linux/proc_fs.h>
 #include "mt-plat/mtk_thermal_monitor.h"
 #include "mach/mtk_thermal.h"
+#include <gpufreq_v2.h>
 #include "mt-plat/mtk_thermal_platform.h"
 #if IS_ENABLED(CONFIG_MTK_CLKMGR)
 #include <mach/mtk_clkmgr.h>
@@ -1075,7 +1076,6 @@ static int _get_current_gpu_power(void)
 }
 
 #endif
-
 /*
  *Pass ATM total power budget to EARA for C/G/... allocation
  *ATM follow up if ERAR bypass
@@ -1118,6 +1118,7 @@ static int EARA_handled(int total_power)
 	return 0;
 #endif
 }
+
 
 static int P_adaptive(int total_power, unsigned int gpu_loading)
 {
@@ -1472,7 +1473,6 @@ int clatm_get_curr_opp_power(void)
 	cpu_power = 0;
 #endif
 	gpu_power = _get_current_gpu_power();
-
 	tscpu_dprintk("%s cpu power=%d gpu power=%d\n",
 		__func__, cpu_power, gpu_power);
 
@@ -1577,8 +1577,8 @@ static int _adaptive_power_ppb
 				"%s triggered:0->1 Tp %ld, Tc %ld, TARGET_TJ %d, Pt %d\n",
 				__func__, prev_temp, curr_temp, TARGET_TJ,
 				total_power);
+			return  P_adaptive(total_power, gpu_loading);
 
-			return P_adaptive(total_power, gpu_loading);
 		}
 
 		/* Adjust total power budget if necessary */
@@ -1592,7 +1592,8 @@ static int _adaptive_power_ppb
 		tscpu_dprintk("%s Tp %ld, Tc %ld, Pt %d\n", __func__,
 					prev_temp, curr_temp, total_power);
 
-		return P_adaptive(total_power, gpu_loading);
+			return  P_adaptive(total_power, gpu_loading);
+
 		/* end of cl_dev_adp_cpu_state_active == 1 */
 	} else {
 		if (triggered) {
@@ -1604,7 +1605,8 @@ static int _adaptive_power_ppb
 				tscpu_printk("exit but Tc(%ld) > cetj(%d)\n",
 					curr_temp, current_ETJ);
 
-			return P_adaptive(0, 0);
+			return  P_adaptive(0, 0);
+
 #if THERMAL_HEADROOM
 		} else {
 			if (thp_max_cpu_power != 0)
@@ -1669,7 +1671,8 @@ static int _adaptive_power
 			tscpu_dprintk("%s Tp %ld, Tc %ld, Pt %d\n", __func__,
 					prev_temp, curr_temp, total_power);
 
-			return P_adaptive(total_power, gpu_loading);
+			return  P_adaptive(total_power, gpu_loading);
+
 		}
 
 		/* Adjust total power budget if necessary */
@@ -1824,7 +1827,8 @@ static int _adaptive_power
 							prev_temp, curr_temp,
 			      total_power);
 
-		return P_adaptive(total_power, gpu_loading);
+			return  P_adaptive(total_power, gpu_loading);
+
 	}
 #if CONTINUOUS_TM
 	else if ((cl_dev_adp_cpu_state_active == 1)
@@ -1839,7 +1843,8 @@ static int _adaptive_power
 			tscpu_dprintk("%s Tp %ld, Tc %ld, Pt %d\n", __func__,
 							prev_temp, curr_temp,
 				      total_power);
-			return P_adaptive(0, 0);
+			return  P_adaptive(0, 0);
+
 		}
 #if THERMAL_HEADROOM
 		else {
@@ -1859,8 +1864,8 @@ static int _adaptive_power
 			tscpu_dprintk("%s Tp %ld, Tc %ld, Pt %d\n", __func__,
 							prev_temp, curr_temp,
 				      total_power);
+			return  P_adaptive(0, 0);
 
-			return P_adaptive(0, 0);
 		}
 #if THERMAL_HEADROOM
 		else {
@@ -2363,7 +2368,6 @@ static ssize_t tscpu_write_atm_setting
 	tscpu_dprintk("tscpu_write_dtm_setting bad argument\n");
 	return -EINVAL;
 }
-
 static int tscpu_read_gpu_threshold(struct seq_file *m, void *v)
 {
 	seq_printf(m, "H %d L %d\n", GPU_L_H_TRIP, GPU_L_L_TRIP);

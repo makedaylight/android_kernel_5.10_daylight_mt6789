@@ -211,7 +211,7 @@ static void mdla_pmu_event_write_all(u32 core_id, u16 priority)
 	}
 }
 
-static u32 mdla_pmu_get_num_evt(u32 core_id, int priority)
+static u32 mdla_pmu_get_num_evt(u32 core_id, u16 priority)
 {
 	if (mdla_prof_use_dbgfs_pmu_event(core_id))
 		return MDLA_PMU_COUNTERS;
@@ -222,7 +222,7 @@ static u32 mdla_pmu_get_num_evt(u32 core_id, int priority)
 	return mdla_get_device(core_id)->pmu_info[priority].number_of_event;
 }
 
-static void mdla_pmu_set_num_evt(u32 core_id, int prio, int val)
+static void mdla_pmu_set_num_evt(u32 core_id, u16 prio, u32 val)
 {
 	if (prio < PRIORITY_LEVEL)
 		mdla_get_device(core_id)->pmu_info[prio].number_of_event = val;

@@ -36,10 +36,13 @@ int apu_device_power_suspend(enum DVFS_USER user, int is_suspend)
 		ret = -EFAULT;
 		goto out;
 	}
-	apower_info(ad->dev, "[%s] called by %s\n",
+	apower_warn(ad->dev, "[%s] called by %s\n",
 		__func__, apu_dev_string(ori_usr));
 
 	ret = pm_runtime_put_sync(ad->dev);
+
+	apu_get_power_info(0);
+
 	if (ret)
 		apower_err(ad->dev, "[%s] suspend fail, ret %d\n", __func__, ret);
 
@@ -64,8 +67,11 @@ int apu_device_power_on(enum DVFS_USER user)
 		ret = -EFAULT;
 		goto out;
 	}
-	apower_info(ad->dev, "[%s] called by %s\n", __func__, apu_dev_string(ori_usr));
+	apower_warn(ad->dev, "[%s] called by %s\n", __func__, apu_dev_string(ori_usr));
 	ret = pm_runtime_get_sync(ad->dev);
+
+	apu_get_power_info(0);
+
 	/* Ignore suppliers with disabled runtime PM. */
 	if (ret < 0 && ret != -EACCES) {
 		apower_err(ad->dev, "[%s] fail, ret %d\n", __func__, ret);
@@ -379,6 +385,9 @@ int apu_power_init(void)
 	ret = platform_driver_register(&apusys_power_driver);
 	if (ret)
 		return ret;
+	ret = platform_driver_register(&vb_driver);
+	if (ret)
+		return ret;
 	return 0;
 }
 
@@ -386,6 +395,7 @@ void apu_power_exit(void)
 {
 	int ret = 0;
 
+	platform_driver_unregister(&vb_driver);
 	platform_driver_unregister(&mdla_devfreq_driver);
 	platform_driver_unregister(&vpu_devfreq_driver);
 	platform_driver_unregister(&apu_cb_driver);

@@ -175,6 +175,11 @@ static void reviser_power_on_cb(void *para)
 		return;
 	}
 
+	if (reviser_init_ip()) {
+		LOG_ERR("Init IP Fail\n");
+		return;
+	}
+
 	LOG_INFO("reviser power-on callback Done\n");
 }
 

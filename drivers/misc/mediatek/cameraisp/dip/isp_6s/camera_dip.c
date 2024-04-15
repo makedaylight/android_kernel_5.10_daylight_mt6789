@@ -437,6 +437,8 @@ static struct IspWorkqueTable dip_workque[DIP_IRQ_TYPE_AMOUNT] = {
 
 static DEFINE_MUTEX(gDipMutex);
 static DEFINE_MUTEX(DipMutexbuf); /*GKI AOSP ION*/
+static DEFINE_MUTEX(DipClk);
+
 
 #ifdef CONFIG_OF
 
@@ -4002,7 +4004,6 @@ static signed int DIP_DumpDIPReg(void)
 				g_pPhyDIPBuffer[i+3] =
 					DIP_RD32(DIP_A_BASE + ((i+3)*4));
 			}
-			spin_lock(&(IspInfo.SpinLockClock));
 			if (mtk_dip_count == 2) {
 				for (i = 0; i < (DIP_REG_RANGE >> 2); i = i + 4) {
 					g_pPhyDIPBuffer[i] =
@@ -4015,7 +4016,6 @@ static signed int DIP_DumpDIPReg(void)
 						DIP_RD32(DIP_B_BASE + ((i+3)*4));
 				}
 			}
-			spin_unlock(&(IspInfo.SpinLockClock));
 		} else {
 			CMDQ_ERR("g_pPhyDIPBuffer:(0x%pK)",
 			g_pPhyDIPBuffer);
@@ -4197,17 +4197,19 @@ static inline void Prepare_Enable_ccf_clock(void)
 	if (ret)
 		LOG_ERR("mtk_smi_larb_get larb9 fail %d\n", ret);
 
-	if (dip_clk.DIP_IMG_MFB_DIP != NULL) {
+	if (dip_clk.DIP_IMG_MFB_DIP != NULL || dip_clk.DIP_IMG_DIP2 != NULL) {
 		ret = mtk_smi_larb_get(dip_devs->larb11);
 		LOG_INF("mtk_smi_larb_get larb11 %d\n", ret);
 	if (ret)
 		LOG_ERR("mtk_smi_larb_get larb11 fail %d\n", ret);
 	}
 
-	ret = clk_prepare_enable(dip_clk.DIP_IMG_LARB9);
+	if (dip_clk.DIP_IMG_LARB9 != NULL)
+		ret = clk_prepare_enable(dip_clk.DIP_IMG_LARB9);
 	if (ret)
 		LOG_ERR("cannot prepare and enable DIP_IMG_LARB9 clock\n");
 
+	if (dip_clk.DIP_IMG_DIP != NULL)
 	ret = clk_prepare_enable(dip_clk.DIP_IMG_DIP);
 	if (ret)
 		LOG_ERR("cannot prepare and enable DIP_IMG_DIP clock\n");
@@ -4225,36 +4227,38 @@ static inline void Prepare_Enable_ccf_clock(void)
 	if (ret)
 		LOG_ERR("cannot prepare and enable DIP_IMG_MFB_DIP clock\n");
 	}
-	spin_lock(&(IspInfo.SpinLockClock));
-	if (mtk_dip_count == 2) {
+
+	if (dip_clk.DIP_IMG_DIP2 != NULL) {
 		ret = clk_prepare_enable(dip_clk.DIP_IMG_DIP2);
 		if (ret)
 			LOG_ERR("cannot prepare and enable DIP_IMG_DIP clock\n");
 	}
-	spin_unlock(&(IspInfo.SpinLockClock));
+
 }
 #endif
 
 static inline void Disable_Unprepare_ccf_clock(void)
 {
-	spin_lock(&(IspInfo.SpinLockClock));
-	if (mtk_dip_count == 2)
+	if (dip_clk.DIP_IMG_DIP2 != NULL)
 		clk_disable_unprepare(dip_clk.DIP_IMG_DIP2);
-
-	spin_unlock(&(IspInfo.SpinLockClock));
+	LOG_INF("%s clk_disable_unprepare DIP_IMG_DIP2", __func__);
 
 	if (dip_clk.DIP_IMG_MFB_DIP != NULL) {
 		clk_disable_unprepare(dip_clk.DIP_IMG_MFB_DIP);
+		LOG_INF("%s clk_disable_unprepare DIP_IMG_MFB_DIP", __func__);
 		clk_disable_unprepare(dip_clk.DIP_IMG_DIP_MSS);
+		LOG_INF("%s clk_disable_unprepare DIP_IMG_DIP_MSS", __func__);
 		clk_disable_unprepare(dip_clk.DIP_IMG_LARB11);
+		LOG_INF("%s clk_disable_unprepare DIP_IMG_LARB11", __func__);
 	}
 
 	clk_disable_unprepare(dip_clk.DIP_IMG_DIP);
+	LOG_INF("%s clk_disable_unprepare DIP_IMG_DIP", __func__);
 	clk_disable_unprepare(dip_clk.DIP_IMG_LARB9);
 	LOG_INF("%s cnt(%d),clk_MFB: %d\n", __func__, G_u4DipEnClkCnt, dip_clk.DIP_IMG_MFB_DIP);
 	mtk_smi_larb_put(dip_devs->larb9);
 
-	if (dip_clk.DIP_IMG_MFB_DIP != NULL) {
+	if (dip_clk.DIP_IMG_MFB_DIP != NULL || dip_clk.DIP_IMG_DIP2 != NULL) {
 		mtk_smi_larb_put(dip_devs->larb11);
 		LOG_INF("mtk_smi_larb_put larb11 %d\n");
 	}
@@ -4424,6 +4428,26 @@ static inline int m4u_control_iommu_port(void)
 	return ret;
 }
 #endif
+
+static inline void DIP_Load_InitialSettings(void)
+{
+	unsigned int i = 0;
+
+	LOG_DBG("- E.\n");
+
+	for (i = 0 ; i < DIP_INIT_ARRAY_COUNT ; i++) {
+		//ofset = DIP_A_BASE + DIP_INIT_ARY[i].ofset;
+		DIP_WR32(DIP_A_BASE + DIP_INIT_ARY[i].ofset,
+				DIP_INIT_ARY[i].val);
+
+		if (mtk_dip_count == 2)
+			DIP_WR32(DIP_B_BASE + DIP_INIT_ARY[i].ofset,
+				DIP_INIT_ARY[i].val);
+
+	}
+
+}
+
 /**************************************************************
  *
  **************************************************************/
@@ -4449,11 +4473,9 @@ static void DIP_EnableClock(bool En)
 			setReg = 0xFFFFFFFF;
 			/*DIP_WR32(CAMSYS_REG_CG_CLR, setReg);*/
 			DIP_WR32(IMGSYS_REG_CG_CLR, setReg);
-			spin_lock(&(IspInfo.SpinLockClock));
 			if (mtk_dip_count == 2)
 				DIP_WR32(IMGSYS2_REG_CG_CLR, setReg);
 
-			spin_unlock(&(IspInfo.SpinLockClock));
 			break;
 		default:
 			break;
@@ -4463,10 +4485,18 @@ static void DIP_EnableClock(bool En)
 
 #else/*CCF*/
 		/*LOG_INF("CCF:prepare_enable clk");*/
-		Prepare_Enable_ccf_clock(); /* !!cannot be used in spinlock!! */
 		spin_lock(&(IspInfo.SpinLockClock));
 		G_u4DipEnClkCnt++;
+		/*LOG_INF("Camera clock enabled. G_u4DipEnClkCnt: %d.", G_u4DipEnClkCnt);*/
+        if (G_u4DipEnClkCnt == 1) {
+			spin_unlock(&(IspInfo.SpinLockClock));
+		 	mutex_lock(&(DipClk));
+			Prepare_Enable_ccf_clock(); /* !!cannot be used in spinlock!! */
+			DIP_Load_InitialSettings();
+			mutex_unlock(&(DipClk));
+        } else {
 		spin_unlock(&(IspInfo.SpinLockClock));
+		}
 
 #endif
 	} else {                /* Disable clock. */
@@ -4491,13 +4521,20 @@ static void DIP_EnableClock(bool En)
 		spin_unlock(&(IspInfo.SpinLockClock));
 #else
 		/*LOG_INF("CCF:disable_unprepare clk\n");*/
-		Disable_Unprepare_ccf_clock();
 		spin_lock(&(IspInfo.SpinLockClock));
 		G_u4DipEnClkCnt--;
+		/*LOG_INF("Camera clock disabled. G_u4DipEnClkCnt: %d.", G_u4DipEnClkCnt);*/
+        if (G_u4DipEnClkCnt == 0) {
+			spin_unlock(&(IspInfo.SpinLockClock));
+			mutex_lock(&(DipClk));
+			Disable_Unprepare_ccf_clock(); /* !!cannot be used in spinlock!! */
+			mutex_unlock(&(DipClk));
+		} else {
 		spin_unlock(&(IspInfo.SpinLockClock));
-		/* !!cannot be used in spinlock!! */
+		}
 #endif
-	}
+
+}
 }
 
 
@@ -6638,26 +6675,6 @@ static long DIP_ioctl_compat(
 
 #endif
 
-static inline void DIP_Load_InitialSettings(void)
-{
-	unsigned int i = 0;
-
-	LOG_DBG("- E.\n");
-
-	for (i = 0 ; i < DIP_INIT_ARRAY_COUNT ; i++) {
-		//ofset = DIP_A_BASE + DIP_INIT_ARY[i].ofset;
-		DIP_WR32(DIP_A_BASE + DIP_INIT_ARY[i].ofset,
-				DIP_INIT_ARY[i].val);
-
-		spin_lock(&(IspInfo.SpinLockClock));
-		if (mtk_dip_count == 2)
-			DIP_WR32(DIP_B_BASE + DIP_INIT_ARY[i].ofset,
-				DIP_INIT_ARY[i].val);
-
-		spin_unlock(&(IspInfo.SpinLockClock));
-	}
-
-}
 
 /**************************************************************
  *
@@ -6873,8 +6890,8 @@ static signed int DIP_open(
 #endif
 	DIP_EnableClock(MTRUE);
 	g_u4DipCnt = 0;
-	if (G_u4DipEnClkCnt == 1)
-		DIP_Load_InitialSettings();
+	// if (G_u4DipEnClkCnt == 1)
+	// 	DIP_Load_InitialSettings();
 #ifdef CONFIG_PM_WAKELOCKS
 	__pm_relax(dip_wake_lock);
 #else
@@ -7225,6 +7242,7 @@ static signed int DIP_probe(struct platform_device *pDev)
 	LOG_INF("- E. DIP driver probe. nr_dip_devs : %d.\n", nr_dip_devs);
 	max_tdr_no = 0;
 	mtk_dip_count = 1;
+	G_u4DipEnClkCnt = 0;
 	/* Get platform_device parameters */
 #ifdef CONFIG_OF
 
@@ -7605,8 +7623,6 @@ static int dip_suspend_pm_event(struct notifier_block *notifier,
 	case PM_POST_SUSPEND:    /*after resume*/
 		if (g_u4DipCnt > 0) {
 			DIP_EnableClock(MTRUE);
-			if (G_u4DipEnClkCnt == 1)
-				DIP_Load_InitialSettings();
 			g_u4DipCnt--;
 		}
 		if (g_DIP_PMState == 1) {
@@ -8496,10 +8512,10 @@ static signed int __init DIP_Init(void)
 	/* Register DIP callback */
 	LOG_INF("register dip callback for MDP");
 	cmdqCoreRegisterCB(mdp_get_group_isp(),
-			   NULL,
+			   DIP_MDPClockOnCallback,
 			   DIP_MDPDumpCallback,
 			   DIP_MDPResetCallback,
-			   NULL);
+			   DIP_MDPClockOffCallback);
 	/* Register GCE callback for dumping DIP register */
 	LOG_DBG("register dip callback for GCE");
 	cmdqCoreRegisterDebugRegDumpCB

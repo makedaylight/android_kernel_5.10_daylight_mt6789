@@ -144,6 +144,12 @@ void ufs_mtk_dbg_print_info(char **buff, unsigned long *size,
 		      hba->dev_info.wmanufacturerid,
 		      hba->dev_info.model);
 
+	/* read/write cmd info */
+	SPREAD_PRINTF(buff, size, m,
+		      "rcmd = %d, wcmd = %d\n",
+		      host->ufs_mtk_qcmd_r_cmd_cnt,
+		      host->ufs_mtk_qcmd_w_cmd_cnt);
+
 	/* Error history */
 	ufs_mtk_dbg_print_err_hist(buff, size, m,
 			      UFS_EVT_PA_ERR, "pa_err");

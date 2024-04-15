@@ -69,11 +69,11 @@ void mdla_util_plat_deinit(struct platform_device *pdev)
 static void mdla_util_dummy_cnt_save(u32 a0, struct mdla_pmu_info *a1) {}
 static void mdla_util_dummy_cnt_read(u32 a0, u32 *a1) {}
 static void mdla_util_dummy_cnt_clr(struct mdla_pmu_info *pmu) {}
-static u32 mdla_util_dummy_get_num_evt(u32 a0, int a1)
+static u32 mdla_util_dummy_get_num_evt(u32 a0, u16 a1)
 {
 	return 0;
 }
-static void mdla_util_dummy_set_num_evt(u32 a0, int a1, int a2) {}
+static void mdla_util_dummy_set_num_evt(u32 a0, u16 a1, u32 a2) {}
 static void mdla_util_dummy_set_mode(struct mdla_pmu_info *a0, u32 a1) {}
 static int mdla_util_dummy_get_mode(struct mdla_pmu_info *a0)
 {
@@ -548,11 +548,11 @@ void mdla_util_io_set_addr(struct mdla_reg_ctl *reg_ctl)
 	io_ops.cmde.read       = mdla_reg_read;
 	io_ops.cmde.write      = mdla_reg_write;
 	io_ops.cmde.set_b      = mdla_reg_set_b;
-	io_ops.cmde.clr_b      = mdla_biu_clr_b;
+	io_ops.cmde.clr_b      = mdla_reg_clr_b;
 	io_ops.biu.read        = mdla_biu_read;
 	io_ops.biu.write       = mdla_biu_write;
 	io_ops.biu.set_b       = mdla_biu_set_b;
-	io_ops.biu.clr_b       = mdla_reg_clr_b;
+	io_ops.biu.clr_b       = mdla_biu_clr_b;
 }
 
 void mdla_util_io_set_extra_addr(int type,

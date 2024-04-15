@@ -470,11 +470,8 @@ static void mtk_dither_prepare(struct mtk_ddp_comp *comp)
 #ifdef CONFIG_DRM_MTK_ICOM_FORCE_GRAYSCALE
 	if (dither_run_restore)
 		ddp_dither_restore(comp);
-	else {
-		if (!(readl(comp->regs + DISP_DITHER_EN) & 0x1))
-			ddp_dither_restore(comp);
+	else
 		dither_run_restore = true;
-	}
 #else
 	ddp_dither_restore(comp);
 #endif
