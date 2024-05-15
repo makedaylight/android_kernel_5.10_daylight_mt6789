@@ -29,8 +29,12 @@ static int backlight_throttle(struct backlight_cooling_device *backlight_cdev, u
 	bl_percent = BACKLIGHT_COOLING_MAX_STATE - state;
 
 	setMaxBrightness(backlight_cdev->name, bl_percent, enable);
+	if (backlight_cdev->name2[0] != '\0')
+		setMaxBrightness(backlight_cdev->name2, bl_percent, enable);
 	backlight_cdev->target_state = state;
 	dev_info(dev, "%s: set lv = %ld, bl percent = %ld done\n", backlight_cdev->name, state, bl_percent);
+	if (backlight_cdev->name2[0] != '\0')
+		dev_info(dev, "%s: set lv = %ld, bl percent = %ld done\n", backlight_cdev->name2, state, bl_percent);
 	return 0;
 }
 
@@ -122,6 +126,11 @@ static int parse_dt(struct platform_device *pdev, struct backlight_cooling_devic
 	}
 
 	snprintf(bl_cdev->name, MAX_BACKLIGHT_COOLER_NAME_LEN, "%s", bl_names);
+
+	ret = of_property_read_string(np, "backlight2-names", &(bl_names));
+	if (ret == 0) {
+		snprintf(bl_cdev->name2, MAX_BACKLIGHT_COOLER_NAME_LEN, "%s", bl_names);
+	}
 
 	return 0;
 }

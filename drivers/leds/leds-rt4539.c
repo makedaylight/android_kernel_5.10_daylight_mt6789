@@ -417,11 +417,11 @@ static void rt4539_disable(struct rt4539_led *priv, const char* log)
 
 /* must check (priv->hw_enabled) before calling */
 static void rt4539_immediately_backlight_off(struct rt4539_led *priv,
-		int time_ctrl, bool force_disable, const char* log)
+		int time_ctrl, const char* log)
 {
 	unsigned long flags;
 
-	if (time_ctrl < 0 && force_disable) {
+	if (time_ctrl < 0) {
 		/* Display will be off immediately so we must turn off backlight right now! */
 		spin_lock_irqsave(&priv->lock, flags);
 		if (!priv->enable && priv->hw_enabled && !test_bit(RT4539_EVENT_BL_ON, &priv->event)) /* check for the off-to-on case */
@@ -442,11 +442,9 @@ static void rt4539_immediately_backlight_off(struct rt4539_led *priv,
 			// set i2c brightness
 			rt4539_i2c_brightness_set(priv, 0);
 
-		if (force_disable) {
-			spin_lock_irqsave(&priv->lock, flags);
-			rt4539_disable(priv, log);
-			spin_unlock_irqrestore(&priv->lock, flags);
-		}
+		spin_lock_irqsave(&priv->lock, flags);
+		rt4539_disable(priv, log);
+		spin_unlock_irqrestore(&priv->lock, flags);
 	}
 }
 
@@ -1180,7 +1178,7 @@ static int rt4539_kthread(void *data)
 #ifdef RT4539_DISPLAY_BACKLIGHT_TIME_LATENCY_DEBUG
 				priv->screen_off_backlight_off_delay_end = ktime_get();
 #endif
-				rt4539_immediately_backlight_off(priv, RT4539_REG_06_SLOPE_LIGHT_128ms, true,
+				rt4539_immediately_backlight_off(priv, RT4539_REG_06_SLOPE_LIGHT_128ms,
 						priv->on_off_reason ? priv->on_off_reason : "UNKNOWN");
 			} else
 				spin_unlock_irqrestore(&priv->lock, flags);
@@ -1345,7 +1343,7 @@ static void rt4539_start_off_timer(struct rt4539_led *priv, const char* reason, 
 	}
 
 #ifdef RT4539_DISPLAY_BACKLIGHT_VERBOSE_DEBUG
-	dev_info(priv->dev, "-(%u)", ms);
+	dev_info(priv->dev, "-(%u)", us);
 #endif
 }
 
@@ -1521,7 +1519,9 @@ static int rt4539_brightness_set(struct mt_led_data *mdev, int brightness)
 	struct rt4539_led *priv = container_of(mdev, struct rt4539_led, m_led);
 	int ret = 0;
 
-	// dev_info(priv->dev, "%d->%d", priv->curr_hw_brightness, brightness);
+#ifdef RT4539_DISPLAY_BACKLIGHT_VERBOSE_DEBUG
+	dev_info(priv->dev, "%d->%d", priv->curr_hw_brightness, brightness);
+#endif
 
 	if (brightness > priv->hw_brightness_on_threshold) {
 		/* screen on backlight on */
@@ -1562,14 +1562,44 @@ static int rt4539_brightness_set(struct mt_led_data *mdev, int brightness)
 		priv->enable = false;
 
 		rt4539_cancel_off_timer(priv);
+		if (!completion_done(&priv->backlight_off_fading_out_complete))
+			rt4539_cancel_off_fading_out_timer(priv);
 
 		if (brightness > 0 || (priv->m_led.conf.cdev.flags & LED_SYSFS_DISABLE) || priv->display_off) {
 			/* display already off, LED_SYSFS_DISABLE or screen on backlight off */
 			if (priv->hw_enabled) {
 				if ((priv->m_led.conf.cdev.flags & LED_SYSFS_DISABLE) || priv->display_off)
-					rt4539_immediately_backlight_off(priv, RT4539_REG_06_SLOPE_LIGHT_8ms, true, "immediate");
-				else
-					rt4539_immediately_backlight_off(priv, RT4539_REG_06_SLOPE_LIGHT_8ms, true, "screen on backlight off");
+					rt4539_immediately_backlight_off(priv, RT4539_REG_06_SLOPE_LIGHT_8ms, "immediate");
+				else {
+#if 0
+					rt4539_immediately_backlight_off(priv, RT4539_REG_06_SLOPE_LIGHT_8ms, "screen on backlight off");
+#else
+					int time_ctrl = (priv->time_ctrl >= 0) ? priv->time_ctrl : RT4539_REG_06_DEFAULT;
+					unsigned int fade_total_time; /* us */
+
+					if ((time_ctrl & RT4539_REG_06_SLOPE_FILTER_MASK) != 0) {
+						fade_total_time = rt4539_get_slop_time_ms(time_ctrl) * USEC_PER_MSEC; /* us */
+					} else {
+						unsigned int fade_time; /* us */
+
+						fade_time = fade_time_us[(time_ctrl & RT4539_REG_06_FADE_TIME_MASK) >> RT4539_REG_06_FADE_TIME_SHIFT];
+						fade_total_time = fade_time * priv->curr_hw_brightness;
+					}
+
+					if (priv->control != RT4539_CONTROL_I2C /*&& priv->pwm*/)
+						// set pwm brightness
+						rt4539_pwm_brightness_set(priv, priv->m_led.conf.max_hw_brightness, 0);
+					else
+						// set i2c brightness
+						rt4539_i2c_brightness_set(priv, 0);
+
+					priv->backlight_off_waiting_for_off_fading_out = false;
+					priv->backlight_off_start_off_saftey_timer = false;
+
+					/* wait for sloping/fading */
+					rt4539_start_off_timer(priv, "screen on backlight off", fade_total_time); /* us */
+#endif
+				}
 			}
 		} else {
 			/* screen off backlight off */
@@ -1679,6 +1709,11 @@ static int rt4539_brightness_set(struct mt_led_data *mdev, int brightness)
 			rt4539_start_off_timer(priv, "screen off backlight safety off",
 					priv->screen_off_backlight_off_safety_delay_us); /* us */
 		}
+	} else if (brightness == 0 && /*!priv->enable &&*/ priv->hw_enabled) {
+		rt4539_cancel_off_timer(priv);
+		if (!completion_done(&priv->backlight_off_fading_out_complete))
+			rt4539_cancel_off_fading_out_timer(priv);
+		rt4539_immediately_backlight_off(priv, -1, "immediate backlight off");
 	} else {
 		brightness = 0;
 	}
@@ -2018,8 +2053,10 @@ static int rt4539_remove(struct i2c_client *client)
 
 	if (priv->hw_enabled) {
 		rt4539_cancel_off_timer(priv);
+		if (!completion_done(&priv->backlight_off_fading_out_complete))
+			rt4539_cancel_off_fading_out_timer(priv);
 		priv->enable = false;
-		rt4539_immediately_backlight_off(priv, RT4539_REG_06_SLOPE_LIGHT_0ms, true, "rmmod");
+		rt4539_immediately_backlight_off(priv, -1, "rmmod");
 	}
 
 	if (priv->kthread) {
@@ -2044,8 +2081,10 @@ static void rt4539_shutdown(struct i2c_client *client)
 
 	if (priv->hw_enabled) {
 		rt4539_cancel_off_timer(priv);
+		if (!completion_done(&priv->backlight_off_fading_out_complete))
+			rt4539_cancel_off_fading_out_timer(priv);
 		priv->enable = false;
-		rt4539_immediately_backlight_off(priv, RT4539_REG_06_SLOPE_LIGHT_0ms, true, "shutdown");
+		rt4539_immediately_backlight_off(priv, -1, "shutdown");
 	}
 }
 

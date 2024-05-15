@@ -378,6 +378,15 @@ int setMaxBrightness(char *name, int percent, bool enable)
 	index = get_desp_index(name);
 	if (index < 0) {
 		pr_notice("can not find leds by led_desp %s", name);
+#if 0
+{
+		int i = 0;
+		while (i < leds_info->lens) {
+			pr_notice("led_desp '%s' <-> '%s'", leds_info->leds[i]->name, name);
+			i++;
+		}
+}
+#endif
 		return -1;
 	}
 	led_dat = container_of(leds_info->leds[index],
@@ -388,6 +397,12 @@ int setMaxBrightness(char *name, int percent, bool enable)
 	pr_info("before: name: %s, percent : %d, limit_l : %d, enable: %d",
 		leds_info->leds[index]->name, percent, limit_l, enable);
 	if (enable) {
+#if IS_ENABLED(CONFIG_LEDS_RT4539)
+		if (percent == 0) {
+			/* Refer to hw-brightness-on-threshold = <16> in DTS */
+			limit_l = 16; /* hard-coded */
+		}
+#endif
 		led_dat->conf.limit_hw_brightness = limit_l;
 		cur_l = min(led_dat->last_hw_brightness, limit_l);
 	} else if (!enable) {

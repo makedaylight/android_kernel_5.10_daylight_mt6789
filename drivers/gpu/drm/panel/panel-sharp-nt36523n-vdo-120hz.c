@@ -44,16 +44,19 @@
 #ifdef SHARP_VERBOSE_DEBUG
 #define LCM_DEV_LOGD(fmt, args...)	dev_info(ctx->dev, "[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
 #define LCM_LOGD(fmt, args...)		pr_info("[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
+
+#define LCM_DEV_LOGI(fmt, args...)	dev_alert(ctx->dev, "[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
+#define LCM_LOGI(fmt, args...)		pr_alert("[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
 #else
 #define LCM_DEV_LOGD(fmt, args...)
 #define LCM_LOGD(fmt, args...)
+
+#define LCM_DEV_LOGI(fmt, args...)	dev_info(ctx->dev, "[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
+#define LCM_LOGI(fmt, args...)		pr_info("[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
 #endif
 
 #define LCM_DEV_LOGE(fmt, args...)	dev_err(ctx->dev, "[LCM][%s][%d][ERR]: " fmt, __func__, __LINE__, ##args)
 #define LCM_LOGE(fmt, args...)		pr_err("[LCM][%s][%d][ERR]: " fmt, __func__, __LINE__, ##args)
-
-#define LCM_DEV_LOGI(fmt, args...)	dev_info(ctx->dev, "[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
-#define LCM_LOGI(fmt, args...)		pr_info("[LCM][%s][%d]: " fmt, __func__, __LINE__, ##args)
 
 #define MSG_SIZE 128
 #if IS_ENABLED(CONFIG_MTPROF)
@@ -88,6 +91,7 @@ struct sharp {
 	unsigned int sample_id3;
 	unsigned int lcm_config;
 	unsigned int islcmfound;
+	unsigned int is_tps65132ax;
 
 	int error;
 };
@@ -157,22 +161,18 @@ static void sharp_check_sample_id(struct sharp *ctx)
 
 static void panel_udelay(unsigned int us)
 {
-	if (us > 0) {
-		if (us > 10)
-			usleep_range(us, us);
-		else
-			udelay(us);
-	}
+	if (us > 10)
+		usleep_range(us, us);
+	else if (us)
+		udelay(us);
 }
 
 static void panel_mdelay(unsigned int ms)
 {
-	if (ms > 0) {
-		if (ms > 20)
-			msleep(ms);
-		else
-			usleep_range(ms * 1000, ms * 1000);
-	}
+	if (ms > 20)
+		msleep(ms);
+	else if (ms)
+		usleep_range(ms * 1000, ms * 1005);
 }
 #define UDELAY(n) (panel_udelay(n))
 #define MDELAY(n) (panel_mdelay(n))
@@ -181,9 +181,62 @@ static int bias_tps65132_enable(struct sharp *ctx, int vpos_val, int vneg_val)
 {
 	int ret = 0;
 	int retval = 0;
+	bool set_volt_before_enable = ctx->is_tps65132ax ? true : false;
 	int volt;
 
 	LCM_DEV_LOGI("+++");
+
+	if (!set_volt_before_enable) {
+		if (regulator_is_enabled(ctx->disp_bias_pos))
+			set_volt_before_enable = true; /* Boot-On enabled */
+#if 0 /* Get from bootloader */
+		else {
+			volt = regulator_get_voltage(ctx->disp_bias_pos);
+			if (volt > 0) {
+				ctx->is_tps65132ax = 1;
+				set_volt_before_enable = true;
+				LCM_DEV_LOGI("found TPS65132Ax: disp_bias_pos voltage: +%d", volt);
+			} else
+				LCM_DEV_LOGI("found TPS65132");
+		}
+#endif
+	}
+
+	if (set_volt_before_enable) {
+		/* set voltage with min & max */
+
+		volt = regulator_get_voltage(ctx->disp_bias_pos);
+		LCM_DEV_LOGI("Check disp_bias_pos voltage: %d -> %d\n", volt, vpos_val);
+		if (volt != vpos_val) {
+			/** In order to pass the check of voltage->min_uV and voltage->max_uV condition in regulator_set_voltage_unlocked()
+			 *  when calling regulator_set_voltage() to change the voltage at enable.
+			 **/
+			ret = regulator_set_voltage(ctx->disp_bias_pos, volt, volt);
+			if (ret < 0)
+				LCM_DEV_LOGE("set voltage disp_bias_pos fail, voltage = +%d ret = %d\n", volt, ret);
+			retval |= ret;
+		}
+		ret = regulator_set_voltage(ctx->disp_bias_pos, vpos_val, vpos_val);
+		if (ret < 0)
+			LCM_DEV_LOGE("set voltage disp_bias_pos fail, voltage = +%d ret = %d\n", vpos_val, ret);
+		retval |= ret;
+
+		volt = regulator_get_voltage(ctx->disp_bias_neg);
+		LCM_DEV_LOGI("Check disp_bias_neg voltage: %d -> %d\n", volt, vneg_val);
+		if (volt != vneg_val) {
+			/** In order to pass the check of voltage->min_uV and voltage->max_uV condition in regulator_set_voltage_unlocked()
+			 *  when calling regulator_set_voltage() to change the voltage at enable.
+			 **/
+			ret = regulator_set_voltage(ctx->disp_bias_neg, volt, volt);
+			if (ret < 0)
+				LCM_DEV_LOGE("set voltage disp_bias_neg fail, voltage = -%d ret = %d\n", volt, ret);
+			retval |= ret;
+		}
+		ret = regulator_set_voltage(ctx->disp_bias_neg, vneg_val, vneg_val);
+		if (ret < 0)
+			LCM_DEV_LOGE("set voltage disp_bias_neg fail, voltage = -%d ret = %d\n", vneg_val, ret);
+		retval |= ret;
+	}
 
 	/* enable regulator */
 	ret = regulator_enable(ctx->disp_bias_pos);
@@ -194,42 +247,48 @@ static int bias_tps65132_enable(struct sharp *ctx, int vpos_val, int vneg_val)
 	if (ret < 0)
 		LCM_DEV_LOGE("enable regulator disp_bias_neg fail, ret = %d\n", ret);
 	retval |= ret;
-	MDELAY(5);
 
-	/* set voltage with min & max*/
-	volt = regulator_get_voltage(ctx->disp_bias_pos);
-	LCM_DEV_LOGI("Check disp_bias_pos voltage: %d", volt);
-	if (volt != vpos_val) {
-		ret = regulator_set_voltage(ctx->disp_bias_pos, volt, volt);
-		if (ret < 0)
-			LCM_DEV_LOGE("set voltage disp_bias_pos fail, voltage = %d ret = %d\n", volt, ret);
-		retval |= ret;
+	if (!set_volt_before_enable) {
+		MDELAY(5);
 
+		volt = regulator_get_voltage(ctx->disp_bias_pos);
+		LCM_DEV_LOGI("Check disp_bias_pos voltage: %d -> %d\n", volt, vpos_val);
+		if (volt != vpos_val) {
+			/** In order to pass the check of voltage->min_uV and voltage->max_uV condition in regulator_set_voltage_unlocked()
+			 *  when calling regulator_set_voltage() to change the voltage at enable.
+			 **/
+			ret = regulator_set_voltage(ctx->disp_bias_pos, volt, volt);
+			if (ret < 0)
+				LCM_DEV_LOGE("set voltage disp_bias_pos fail, voltage = +%d ret = %d\n", volt, ret);
+			retval |= ret;
+		}
 		ret = regulator_set_voltage(ctx->disp_bias_pos, vpos_val, vpos_val);
 		if (ret < 0)
-			LCM_DEV_LOGE("set voltage disp_bias_pos fail, voltage = %d ret = %d\n", vpos_val, ret);
-		retval |= ret;
-	}
-
-	volt = regulator_get_voltage(ctx->disp_bias_neg);
-	LCM_DEV_LOGI("Check disp_bias_neg voltage: %d", volt);
-	if (volt != vneg_val) {
-		ret = regulator_set_voltage(ctx->disp_bias_neg, volt, volt);
-		if (ret < 0)
-			LCM_DEV_LOGE("set voltage disp_bias_neg fail, voltage = %d ret = %d\n", volt, ret);
+			LCM_DEV_LOGE("set voltage disp_bias_pos fail, voltage = +%d ret = %d\n", vpos_val, ret);
 		retval |= ret;
 
+		volt = regulator_get_voltage(ctx->disp_bias_neg);
+		LCM_DEV_LOGI("Check disp_bias_neg voltage: %d -> %d\n", volt, vneg_val);
+		if (volt != vneg_val) {
+			/** In order to pass the check of voltage->min_uV and voltage->max_uV condition in regulator_set_voltage_unlocked()
+			 *  when calling regulator_set_voltage() to change the voltage at enable.
+			 **/
+			ret = regulator_set_voltage(ctx->disp_bias_neg, volt, volt);
+			if (ret < 0)
+				LCM_DEV_LOGE("set voltage disp_bias_neg fail, voltage = -%d ret = %d\n", volt, ret);
+			retval |= ret;
+		}
 		ret = regulator_set_voltage(ctx->disp_bias_neg, vneg_val, vneg_val);
 		if (ret < 0)
-			LCM_DEV_LOGE("set voltage disp_bias_neg fail, voltage = %d ret = %d\n", vpos_val, ret);
+			LCM_DEV_LOGE("set voltage disp_bias_neg fail, voltage = -%d ret = %d\n", vneg_val, ret);
 		retval |= ret;
 	}
 
 	// /*
 	//  * Tstartup = (Cout x Vneg) / Istartup
-	//  * Tstartup = ((4.7 x 0.000001)F x (6.0)V) / (80 x 0.0001)A = 0.003525
+	//  * Tstartup = (((4.7 + 1.0) x 0.000001)F x (6.0)V) / (80 x 0.0001)A = 0.004275
 	//  */
-	// MDELAY(4);
+	// MDELAY(5);
 
 	LCM_DEV_LOGD("---");
 	return retval;
@@ -242,11 +301,11 @@ static int bias_tps65132_disable(struct sharp *ctx)
 
 	LCM_DEV_LOGI("+++");
 
+	/* disable regulator */
 	ret = regulator_disable(ctx->disp_bias_neg);
 	if (ret < 0)
 		LCM_DEV_LOGE("disable regulator disp_bias_neg fail, ret = %d\n", ret);
 	retval |= ret;
-
 	ret = regulator_disable(ctx->disp_bias_pos);
 	if (ret < 0)
 		LCM_DEV_LOGE("disable regulator disp_bias_pos fail, ret = %d\n", ret);
@@ -358,13 +417,13 @@ static int sharp_panel_init(struct drm_panel *panel)
 
 	/* Reset = H */
 	gpiod_set_value(ctx->reset_gpio, 1);
-	UDELAY(10);
+	UDELAY(12); /* min. 10us */
 	/* Reset = L */
 	gpiod_set_value(ctx->reset_gpio, 0);
-	UDELAY(10);
+	UDELAY(12); /* min. 10us */
 	/* Reset = H */
 	gpiod_set_value(ctx->reset_gpio, 1);
-	MDELAY(90);
+	MDELAY(92); /* min. 90ms */
 	/* [Automatic] MTP Auto load */
 	/* [Automatic] Sleep mode ON */
 
@@ -563,7 +622,7 @@ static int sharp_unprepare(struct drm_panel *panel)
 	sharp_display_off(panel);
 #endif
 	/* Delay 60 ms */
-	MDELAY(60);
+	MDELAY(62); /* min. 60ms */
 
 	/* AVEE OFF */
 	/* AVDD OFF */
@@ -635,7 +694,7 @@ static int sharp_prepare(struct drm_panel *panel)
 		if (ctx->error < 0) {
 			LCM_DEV_LOGE("regulator_enable vddi fail: %d\n", ctx->error);
 		}
-		MDELAY(1);
+		UDELAY(2500); /* min. 1ms */
 	}
 
 	/* AVDD ON */
@@ -659,7 +718,7 @@ static int sharp_prepare(struct drm_panel *panel)
 			bias_tps65132_enable(ctx, 6000000, 6000000);
 			break;
 		}
-		MDELAY(10);
+		MDELAY(11); /* min. 10ms */
 	}
 
 #ifndef CONFIG_DRM_MTK_ICOM_DSI_POWER_SEQUENCE
@@ -1531,6 +1590,7 @@ static ssize_t sharp_state_show(struct device *dev,
 	struct sharp *ctx = dev_get_drvdata(dev);
 	char *s = buf;
 
+	s += sprintf(s, "TPS65132Ax: %d\n", ctx->is_tps65132ax);
 	s += sprintf(s, "Found: %d , ", ctx->islcmfound);
 	s += sprintf(s, "Panel: %s sample\n", ctx->panel_sample);
 
@@ -1598,6 +1658,9 @@ static int sharp_probe(struct mipi_dsi_device *dsi)
 
 	of_property_read_u32(dev->of_node, "islcmfound", &ctx->islcmfound);
 	LCM_DEV_LOGI("islcmfound = 0x%02x\n", ctx->islcmfound);
+
+	of_property_read_u32(dev->of_node, "tps65132ax", &ctx->is_tps65132ax);
+	LCM_DEV_LOGI("tps65132ax = %u\n", ctx->is_tps65132ax);
 
 	sharp_check_sample_id(ctx);
 
@@ -1690,9 +1753,10 @@ static int sharp_probe(struct mipi_dsi_device *dsi)
 	scnprintf(msgbuf, sizeof(msgbuf), "[LCM] ID1=0x%02x, ID2=0x%02x, ID3=0x%02x",
 								ctx->sample_id1, ctx->sample_id2, ctx->sample_id3);
 	LCM_BOOTPROF_LOG(msgbuf);
-	scnprintf(msgbuf, sizeof(msgbuf), "[LCM] Panel: %s sample", ctx->panel_sample);
+	scnprintf(msgbuf, sizeof(msgbuf), "[LCM] Panel: %s sample (TPS65132Ax=%d)",
+			ctx->panel_sample, ctx->is_tps65132ax);
 	LCM_BOOTPROF_LOG(msgbuf);
-	LCM_DEV_LOGI("---");
+	LCM_DEV_LOGD("---");
 
 	return ret;
 }

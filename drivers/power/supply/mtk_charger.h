@@ -69,6 +69,8 @@ struct charger_data;
 #define BATTERY_NOTIFY_CASE_0001_VCHARGER
 #define BATTERY_NOTIFY_CASE_0002_VBATTEMP
 
+#define BAT_LOW_TEMP_PROTECT_ENABLE
+
 /* charging abnormal status */
 #define CHG_VBUS_OV_STATUS	(1 << 0)
 #define CHG_BAT_OT_STATUS	(1 << 1)

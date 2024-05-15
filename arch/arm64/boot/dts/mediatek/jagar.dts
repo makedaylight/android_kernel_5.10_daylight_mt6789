@@ -14,6 +14,7 @@
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/gce/mt6789-gce.h>
 #include <dt-bindings/clock/mt6789-clk.h>
+#include <dt-bindings/thermal/thermal.h>
 
 // #define RT4539_BACKLIGHT_USE_PWM_MODE
 
@@ -41,7 +42,7 @@ ROOT_NODE {
 };
 
 &chosen {
-	/* VTS: bootargs in DTBO is not allowed; Must setup bootargs in mt6789.dts */
+	/* VTS: LK2 will change bootargs so bootargs in DTBO(jagar.dts) is not allowed; Must setup the default bootargs in mt6789.dts */
 	jagar_evt2_eoc_workaround; //change ieoc=100mA, eoc_time=30mins for EVT2 only
 };
 
@@ -155,9 +156,10 @@ ROOT_NODE {
 #else
 		control = <0x01>; /* I2C mode */
 #endif
-		time-ctrl = <0x07>; /* No Slope Time, Fade IN/OUT: max. 64us */
+		//time-ctrl = <0x07>; /* No Slope Time, Fade IN/OUT: max. 64us */
+		time-ctrl = <0x5f>; /* Light Smoothing Slope Time: 128ms */
 
-		/* screen off backlight off: Light Smoothing Slope Time: 256ms, Fade IN/OUT: max. 64us */
+		/* screen off backlight off: Light Smoothing Slope Time: 256ms */
 		screen-off-backlight-off-time-ctrl = <0x67>;
 		/**
 		 * We can not see LCD backlight when the brightness level is less than or equal to this threshold.
@@ -563,9 +565,10 @@ ROOT_NODE {
 #else
 		control = <0x01>; /* I2C mode */
 #endif
-		time-ctrl = <0x07>; /* No Slope Time, Fade IN/OUT: max. 64us */
+		//time-ctrl = <0x07>; /* No Slope Time, Fade IN/OUT: max. 64us */
+		time-ctrl = <0x5f>; /* Light Smoothing Slope Time: 128ms */
 
-		/* screen off backlight off: Light Smoothing Slope Time: 256ms, Fade IN/OUT: max. 64us */
+		/* screen off backlight off: Light Smoothing Slope Time: 256ms */
 		screen-off-backlight-off-time-ctrl = <0x67>;
 		/**
 		 * We can not see LCD backlight when the brightness level is less than or equal to this threshold.
@@ -1372,6 +1375,14 @@ ROOT_NODE {
 		reg = <0x55>;
 		//monitored-battery = <&bat>; //bq78z100 doesn't support dm_regs
 		charger = <&mt6375_chg>;
+
+		/* battery temperature protection for discharging */
+		enable_battery_notify;
+		min_bat_temp = <0>; //degree(s)
+		min_bat_temp_hysteresis = <2>; //min+2 degree(s)
+		max_bat_temp = <50>; //degree(s)
+		max_bat_temp_hysteresis = <2>; //max-2 degree(s)
+
 		io-channels = <&auxadc 3>; //adc 2 will be change to adc 3 on new board
 		io-channel-names = "version-channel";
 		version-lookup-table = <
@@ -1596,6 +1607,105 @@ ROOT_NODE {
 	mediatek,eye-term-host = <4>;
 	mediatek,rev6-host = <3>;
 };
+
+&backlight_cooler {
+	//backlight2-names = "lcd-backlight-amber";
+	backlight2-names = "lcd-backlight-a";
+};
+
+#define THERMAL_ZONE_SOC_MAX_COOLING_ENABLE (1)
+
+#if defined(THERMAL_ZONE_SOC_MAX_COOLING_ENABLE) && (THERMAL_ZONE_SOC_MAX_COOLING_ENABLE > 0)
+//#define SOC_MAX_COOLING_MAP0_MAX    20 /* starts from 0; 20=>750MHz */
+#define SOC_MAX_COOLING_MAP0_MAX    THERMAL_NO_LIMIT
+
+&cpu0 {
+	#cooling-cells = <2>;
+};
+
+&cpu1 {
+	#cooling-cells = <2>;
+};
+
+&cpu2 {
+	#cooling-cells = <2>;
+};
+
+&cpu3 {
+	#cooling-cells = <2>;
+};
+
+&cpu4 {
+	#cooling-cells = <2>;
+};
+
+&cpu5 {
+	#cooling-cells = <2>;
+};
+
+&cpu6 {
+	#cooling-cells = <2>;
+};
+
+&cpu7 {
+	#cooling-cells = <2>;
+};
+
+&thermal_zones {
+	soc_max {
+		//polling-delay = <100>; /* milliseconds */
+		//polling-delay-passive = <5>; /* milliseconds */
+		polling-delay = <1000>; /* milliseconds */
+		polling-delay-passive = <100>; /* milliseconds */
+		thermal-sensors = <&lvts 0>;
+		sustainable-power = <3000>; /* milliwatts */
+
+		trips {
+			threshold: trip-point@0 {
+				//temperature = <55000>;
+				//temperature = <68000>;
+				temperature = <75000>;
+				hysteresis = <2000>;
+				type = "passive";
+			};
+			target: trip-point@1 {
+				temperature = <85000>;
+				//hysteresis = <2000>;
+				hysteresis = <3000>;
+				//hysteresis = <5000>;
+				//hysteresis = <8000>;
+				type = "passive";
+			};
+			soc_max_crit: soc_max_crit@0 {
+				temperature = <113500>;
+				hysteresis = <2000>;
+				type = "critical";
+			};
+		};
+
+		cooling-maps {
+			map0 {
+				trip = <&target>;
+				cooling-device =
+					<&cpu0 THERMAL_NO_LIMIT SOC_MAX_COOLING_MAP0_MAX>,
+					<&cpu1 THERMAL_NO_LIMIT SOC_MAX_COOLING_MAP0_MAX>,
+					<&cpu2 THERMAL_NO_LIMIT SOC_MAX_COOLING_MAP0_MAX>,
+					<&cpu3 THERMAL_NO_LIMIT SOC_MAX_COOLING_MAP0_MAX>,
+					<&cpu4 THERMAL_NO_LIMIT SOC_MAX_COOLING_MAP0_MAX>,
+					<&cpu5 THERMAL_NO_LIMIT SOC_MAX_COOLING_MAP0_MAX>;
+				contribution = <2048>;
+			};
+			map1 {
+				trip = <&target>;
+				cooling-device =
+					<&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+					<&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				contribution = <1024>;
+			};
+		};
+	};
+};
+#endif /* THERMAL_ZONE_SOC_MAX_COOLING_ENABLE */
 
 #include "mediatek/rt9471_slave_charger.dtsi" //for dual chargers - slave cahrger RT9471
 #include <jagar/cust.dtsi>

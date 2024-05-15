@@ -109,6 +109,111 @@ int adc_mV = -1;
 int num_table = 0;
 s32 *lookup_table;
 
+#define ABS_0K	(-2731) //in decidegree C = -273.1 degree C
+static int emul_temp = ABS_0K;
+
+static ssize_t
+emul_temp_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	int temperature;
+
+	if (kstrtoint(buf, 10, &temperature))
+		return -EINVAL;
+
+	if (temperature > ABS_0K) { //temperature in decidegree C
+		emul_temp =  temperature;
+	} else {
+		emul_temp = ABS_0K;
+		dev_warn(dev, "Invalid emul_temp (too low)! Cancel emul_temp.");
+	}
+
+	return count;
+}
+static DEVICE_ATTR_WO(emul_temp);
+
+#ifdef BATTERY_NOTIFY_TEMP_STATUS
+static int BatteryNotify(struct bq27xxx_device_info *di)
+{
+	int ret = 0;
+	char *env[2] = { "CHGSTAT=0", NULL }; //handled in batterywarning.cpp
+
+	dev_notice(di->dev, "%s: 0x%x\n", __func__, di->notify_code);
+	ret = kobject_uevent_env(&di->dev->kobj, KOBJ_CHANGE, env);
+	if (ret)
+		dev_err(di->dev, "%s: kobject_uevent_fail, ret=%d", __func__, ret);
+
+	return ret;
+}
+
+static ssize_t BatteryNotify_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct bq27xxx_device_info *di = dev->driver_data;
+
+	dev_info(dev, "%s: 0x%x\n", __func__, di->notify_code);
+
+	return sprintf(buf, "%u\n", di->notify_code);
+}
+
+static ssize_t BatteryNotify_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct bq27xxx_device_info *di = dev->driver_data;
+	unsigned int reg = 0;
+	int ret = 0;
+
+	if (buf != NULL && size != 0) {
+		ret = kstrtouint(buf, 16, &reg);
+		if (ret < 0) {
+			dev_err(dev, "%s: failed, ret = %d\n", __func__, ret);
+			return ret;
+		}
+		di->notify_code = reg;
+		dev_info(dev, "%s: store code=0x%x\n", __func__, di->notify_code);
+		BatteryNotify(di);
+	}
+	return size;
+}
+
+static DEVICE_ATTR_RW(BatteryNotify);
+
+static void bq27xxx_bat_temp_parse_dt(struct bq27xxx_device_info *di)
+{
+	struct device *dev = di->dev;
+	struct device_node *np = dev->of_node;
+	u32 val = 0;
+
+	if (of_property_read_u32(np, "min_bat_temp", &val) >= 0)
+		di->min_bat_temp = val;
+	else {
+		dev_err(dev, "use default MIN_BAT_TEMP:%d\n", MIN_BAT_TEMP);
+		di->min_bat_temp = MIN_BAT_TEMP;
+	}
+
+	if (of_property_read_u32(np, "min_bat_temp_hysteresis", &val) >= 0) {
+		di->min_bat_temp_hysteresis = val;
+	} else {
+		dev_err(dev, "use default MIN_BAT_TEMP_HYSTERESIS:%d\n", MIN_BAT_TEMP_HYSTERESIS);
+		di->min_bat_temp_hysteresis = MIN_BAT_TEMP_HYSTERESIS;
+	}
+
+	if (of_property_read_u32(np, "max_bat_temp", &val) >= 0)
+		di->max_bat_temp = val;
+	else {
+		dev_err(dev, "use default MAX_BAT_TEMP:%d\n", MAX_BAT_TEMP);
+		di->max_bat_temp = MAX_BAT_TEMP;
+	}
+
+	if (of_property_read_u32(np, "max_bat_temp_hysteresis", &val) >= 0) {
+		di->max_bat_temp_hysteresis = val;
+	} else {
+		dev_err(dev, "use default MAX_BAT_TEMP_HYSTERESIS:%d\n", MAX_BAT_TEMP_HYSTERESIS);
+		di->max_bat_temp_hysteresis = MAX_BAT_TEMP_HYSTERESIS;
+	}
+}
+#endif
+
 static int get_adc_table(struct device *dev)
 {
 	int ret = -1;
@@ -1767,14 +1872,48 @@ static int bq27xxx_battery_read_temperature(struct bq27xxx_device_info *di)
 {
 	int temp;
 
-	temp = bq27xxx_read(di, BQ27XXX_REG_TEMP, false);
-	if (temp < 0) {
-		dev_err(di->dev, "error reading temperature\n");
-		return temp;
+	if (emul_temp > ABS_0K) {
+		temp = emul_temp;
+	} else {
+		temp = bq27xxx_read(di, BQ27XXX_REG_TEMP, false);
+		if (temp < 0) {
+			dev_err(di->dev, "error reading temperature\n");
+			//return temp;
+			return ABS_0K;
+		}
+
+		if (di->opts & BQ27XXX_O_ZERO)
+			temp = 5 * temp / 2;
+
+		temp += ABS_0K; /* decidegree K to C */
 	}
 
-	if (di->opts & BQ27XXX_O_ZERO)
-		temp = 5 * temp / 2;
+#ifdef BATTERY_NOTIFY_TEMP_STATUS
+	/* battery warning to Android */
+	if (di->cache.status == POWER_SUPPLY_STATUS_DISCHARGING) { //no charger is connected
+		if (temp >= (di->max_bat_temp * 10)) { //decidegree C
+			di->notify_code = BAT_OVER_TEMP_STATUS;
+			BatteryNotify(di);
+		} else if (temp <= (di->min_bat_temp * 10)) { //decidegree C
+			di->notify_code = BAT_UNDER_TEMP_STATUS;
+			BatteryNotify(di);
+		} else if (di->notify_code != BAT_NORMAL_STATUS) {
+			/* delay the notfiy_code state to normal in case of additional action required */
+			if (di->notify_code == BAT_OVER_TEMP_STATUS &&
+			    temp < ((di->max_bat_temp - di->max_bat_temp_hysteresis) * 10)) {
+				di->notify_code = BAT_NORMAL_STATUS;
+			} else if (di->notify_code == BAT_UNDER_TEMP_STATUS &&
+			         temp > ((di->min_bat_temp + di->min_bat_temp_hysteresis) * 10)) {
+				di->notify_code = BAT_NORMAL_STATUS;
+			}
+ 			/* auto clear if normal */
+			if (di->notify_code == BAT_NORMAL_STATUS)
+				BatteryNotify(di);
+		} else { //normal
+			/* do nothing */
+		}
+	}
+#endif
 
 	return temp;
 }
@@ -2223,9 +2362,17 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 		ret = bq27xxx_battery_capacity_level(di, val);
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
+#if 0	
 		ret = bq27xxx_simple_value(di->cache.temperature, val);
 		if (ret == 0)
 			val->intval -= 2731; /* convert decidegree k to c */
+#else
+		if (di->cache.temperature > ABS_0K) {
+			val->intval = di->cache.temperature; /* decidegree C */
+			//ret = 0;
+		} else
+			ret = -ENODATA;
+#endif
 		break;
 	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW:
 		ret = bq27xxx_simple_value(di->cache.time_to_empty, val);
@@ -2413,6 +2560,18 @@ int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 	di->chg_psy = devm_power_supply_get_by_phandle(di->dev, "charger");
 	if (IS_ERR_OR_NULL(di->chg_psy))
 		dev_info(di->dev, "Couldn't get chg_psy\n");
+
+	if (device_create_file(di->dev, &dev_attr_emul_temp))
+		dev_warn(di->dev, "Failed to create emul_temp device file!");
+
+#ifdef BATTERY_NOTIFY_TEMP_STATUS
+	/* battery warning */
+	di->notify_code = BAT_NORMAL_STATUS;
+	if (device_create_file(di->dev, &dev_attr_BatteryNotify))
+		dev_warn(di->dev, "Failed to create BatteryNotify device file!");
+
+	bq27xxx_bat_temp_parse_dt(di);
+#endif
 
 	bq27xxx_battery_settings(di);
 	bq27xxx_battery_update(di);

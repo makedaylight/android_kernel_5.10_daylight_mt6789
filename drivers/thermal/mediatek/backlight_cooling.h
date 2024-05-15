@@ -33,6 +33,7 @@
  */
 struct backlight_cooling_device {
 	char name[MAX_BACKLIGHT_COOLER_NAME_LEN];
+	char name2[MAX_BACKLIGHT_COOLER_NAME_LEN];
 	unsigned long target_state;
 	unsigned long max_state;
 	struct thermal_cooling_device *cdev;
