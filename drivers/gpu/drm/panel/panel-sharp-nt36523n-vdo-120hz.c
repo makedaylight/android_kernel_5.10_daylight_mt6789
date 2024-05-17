@@ -621,14 +621,12 @@ static int sharp_unprepare(struct drm_panel *panel)
 #ifndef CONFIG_DRM_MTK_ICOM_DSI_POWER_SEQUENCE
 	sharp_display_off(panel);
 #endif
-	/* Delay 60 ms */
-	MDELAY(62); /* min. 60ms */
 
 	/* AVEE OFF */
 	/* AVDD OFF */
 	if (ctx->disp_bias_pos && ctx->disp_bias_neg) {
 		bias_tps65132_disable(ctx);
-		// MDELAY(0);
+		//MDELAY(5); /* min. 0ms */
 	}
 
 	/* VDDI OFF */
